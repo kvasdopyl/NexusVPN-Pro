@@ -1,0 +1,58 @@
+name: build-windows
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pyinstaller pytest
+
+      - name: Tests
+        run: python -m pytest -q tests
+
+      - name: Build NexusVPN Pro.exe
+        run: pyinstaller --noconfirm --clean NexusVPN.spec
+
+      - name: Bundle cores and rule bases
+        shell: pwsh
+        run: |
+          New-Item -ItemType File -Force portable.flag | Out-Null
+          python -c "from nexusvpn import cores, paths; paths.ensure_dirs(); [print(n, cores.install(n, [None])) for n in cores.SPECS]; print(cores.update_rules([None]))"
+          $dst = "dist/NexusVPN Pro"
+          Copy-Item -Recurse data/cores "$dst/cores"
+          New-Item -ItemType Directory -Force "$dst/rules" | Out-Null
+          Copy-Item data/rules/*.srs "$dst/rules/"
+          Copy-Item README.md "$dst/README.md"
+          Remove-Item -Force -ErrorAction SilentlyContinue "$dst/_internal/PySide6/opengl32sw.dll"
+          Get-ChildItem "$dst/_internal/PySide6/translations" -File | Where-Object { $_.Name -notlike "*_ru.qm" } | Remove-Item -Force
+          Compress-Archive -Path "$dst" -DestinationPath "NexusVPN-Pro-win64.zip" -CompressionLevel Optimal
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NexusVPN-Pro-win64
+          path: NexusVPN-Pro-win64.zip
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('build-{0}', github.run_number) }}
+          name: NexusVPN Pro ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('сборка {0}', github.run_number) }}
+          body: |
+            NexusVPN Pro для Windows x64.
+            Скачайте NexusVPN-Pro-win64.zip, распакуйте и запустите "NexusVPN Pro.exe".
+          files: NexusVPN-Pro-win64.zip
