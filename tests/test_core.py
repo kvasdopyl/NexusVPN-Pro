@@ -201,9 +201,9 @@ def test_games_direct_before_learned_rules(tmp_path):
     s.update(routing_mode="smart")
     rules = cb.build_singbox(s, parse_subscription("\n".join(LINKS))[0])["route"]["rules"]
     game = next(i for i, r in enumerate(rules) if "process_path_regex" in r and r["outbound"] == "direct")
-    # preset rule sets exist only once their .srs files are downloaded, so compare with whatever is there
-    proxied = [i for i, r in enumerate(rules) if r.get("outbound") == "proxy" and "rule_set" in r]
-    assert proxied and game < min(proxied)
+    learned = next(i for i, r in enumerate(rules) if "learned-proxy" in r.get("rule_set", []))
+    presets = next(i for i, r in enumerate(rules) if "ru-blocked-ip" in r.get("rule_set", []))
+    assert game < presets < learned
     s.update(games_direct=False)
     rules = cb.build_singbox(s, parse_subscription("\n".join(LINKS))[0])["route"]["rules"]
     assert not any("process_path_regex" in r and r["outbound"] == "direct" for r in rules)
