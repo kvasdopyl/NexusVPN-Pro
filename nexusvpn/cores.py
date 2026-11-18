@@ -7,7 +7,6 @@ import logging
 import platform
 import re
 import shutil
-import ssl
 import subprocess
 import tarfile
 import time
@@ -16,7 +15,7 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import paths
+from . import paths, tls
 from .presets import ALL_TAGS
 
 log = logging.getLogger("cores")
@@ -65,7 +64,7 @@ SPECS = _specs()
 
 
 def _opener(proxy_port: int | None):
-    handlers: list = [urllib.request.HTTPSHandler(context=ssl.create_default_context())]
+    handlers: list = [urllib.request.HTTPSHandler(context=tls.context())]
     if proxy_port:
         p = f"http://127.0.0.1:{proxy_port}"
         handlers.append(urllib.request.ProxyHandler({"http": p, "https": p}))

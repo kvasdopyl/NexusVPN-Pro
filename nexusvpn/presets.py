@@ -1,6 +1,8 @@
 """Catalogue of built-in rule presets (downloaded as binary .srs rule-sets)."""
 from __future__ import annotations
 
+import re
+
 SAGER_SITE = "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-{}.srs"
 SAGER_IP = "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-{}.srs"
 RUNET = "https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/sing-box/{}"
@@ -54,6 +56,17 @@ DISCORD_DOMAINS = [
     "discordstatus.com", "dis.gd", "discord-attachments-uploads-prd.storage.googleapis.com",
 ]
 # Matches Discord.exe, DiscordPTB, DiscordCanary and their Update.exe/helper processes
+def game_path_regexes(folders: list[str]) -> list[str]:
+    """Folder names -> process_path_regex; a folder anywhere in the program path marks a game."""
+    out = []
+    for f in folders:
+        f = f.strip().strip("\\/").replace("/", "\\")
+        if f:
+            # "Call of Duty" also covers "Call of Duty HQ", "Call of Duty Black Ops 7"
+            out.append(r"(?i)\\" + re.escape(f) + r"[^\\]*\\")
+    return out
+
+
 DISCORD_PROCESS_REGEX = r"(?i)\\Discord(PTB|Canary|Development)?\\"
 DISCORD_PROCESSES = ["Discord.exe", "DiscordPTB.exe", "DiscordCanary.exe", "DiscordDevelopment.exe"]
 

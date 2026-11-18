@@ -386,7 +386,10 @@ class Learner:
             live.add(cid)
             host = (md.get("host") or md.get("sniffHost") or "").lower().strip(".")
             down, up = int(c.get("download", 0)), int(c.get("upload", 0))
-            proc = re.sub(r" \(.*\)$", "", md.get("processPath") or "").replace("/", "\\").rsplit("\\", 1)[-1]
+            path = re.sub(r" \(.*\)$", "", md.get("processPath") or "").replace("/", "\\")
+            if self._is_game(path):
+                continue
+            proc = path.rsplit("\\", 1)[-1]
             t = self._tracks.get(cid)
             if t is None:
                 t = _Track(now, now, down, up, host, md.get("destinationIP", ""), int(md.get("destinationPort") or 0),
@@ -415,6 +418,16 @@ class Learner:
                 self._suspect(t)
             elif t.down >= 64 * 1024 and t.host:
                 self._remember_direct(t.host)
+
+    def _is_game(self, path: str) -> bool:
+        if not path or not self.s["games_direct"]:
+            return False
+        from .presets import game_path_regexes
+        key = tuple(self.s["game_folders"])
+        if getattr(self, "_game_key", None) != key:
+            self._game_key = key
+            self._game_res = [re.compile(r.replace("(?i)", ""), re.I) for r in game_path_regexes(list(key))]
+        return any(r.search(path) for r in self._game_res)
 
     def _remember_direct(self, host: str) -> None:
         d = base_domain(host)

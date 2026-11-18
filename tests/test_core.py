@@ -176,3 +176,56 @@ def test_mihomo_config_valid(tmp_path):
     f.write_text(build_mihomo([n]))
     r = subprocess.run(["mihomo", "-t", "-d", str(tmp_path), "-f", str(f)], capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+GAME_PATHS = {
+    r"C:\Program Files (x86)\Call of Duty\_retail_\cod.exe": True,
+    r"D:\SteamLibrary\steamapps\common\Call of Duty HQ\cod.exe": True,
+    r"C:\Program Files (x86)\Battle.net\Battle.net.exe": True,
+    r"C:\Program Files (x86)\Steam\steam.exe": False,
+    r"C:\Users\u\AppData\Local\Discord\app-1.0.9\Discord.exe": False,
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe": False,
+}
+
+
+def test_game_folders_match_paths(tmp_path):
+    import re
+    from nexusvpn.presets import game_path_regexes
+    rx = game_path_regexes(Settings(tmp_path / "s.json")["game_folders"])
+    for path, is_game in GAME_PATHS.items():
+        assert any(re.search(r, path) for r in rx) == is_game, path
+
+
+def test_games_direct_before_learned_rules(tmp_path):
+    s = Settings(tmp_path / "s.json")
+    s.update(routing_mode="smart")
+    rules = cb.build_singbox(s, parse_subscription("\n".join(LINKS))[0])["route"]["rules"]
+    game = next(i for i, r in enumerate(rules) if "process_path_regex" in r and r["outbound"] == "direct")
+    learned = next(i for i, r in enumerate(rules) if "learned-proxy" in r.get("rule_set", []))
+    presets = next(i for i, r in enumerate(rules) if "ru-blocked-ip" in r.get("rule_set", []))
+    assert game < presets < learned
+    s.update(games_direct=False)
+    rules = cb.build_singbox(s, parse_subscription("\n".join(LINKS))[0])["route"]["rules"]
+    assert not any("process_path_regex" in r and r["outbound"] == "direct" for r in rules)
+
+
+def test_learner_ignores_games(tmp_path):
+    from nexusvpn.learner import Learner
+    s = Settings(tmp_path / "s.json")
+    s.update(learn_min_bytes=500, learn_probe_interval=5)
+    lr = Learner.__new__(Learner)
+    lr.s, lr._tracks, suspects = s, {}, []
+    lr._suspect = lambda t: suspects.append(t.process)
+    lr._remember_direct = lambda h: None
+
+    def conns(up):
+        return [{"id": str(i), "chains": ["direct"], "upload": up, "download": 0,
+                 "metadata": {"processPath": p, "destinationIP": f"4.207.247.{i}", "destinationPort": 443,
+                              "network": "tcp", "host": ""}}
+                for i, p in enumerate(GAME_PATHS)]
+    lr._scan(conns(0))
+    for t in lr._tracks.values():
+        t.first -= 60
+    lr._scan(conns(800))
+    assert "cod.exe" not in suspects and "Battle.net.exe" not in suspects
+    assert "steam.exe" in suspects

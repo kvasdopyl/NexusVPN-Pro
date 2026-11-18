@@ -669,6 +669,8 @@ class SettingsPage(QWidget):
             ("log_max_mb", "Размер файла журнала, МБ", (1, 200)),
             ("process_exclusions", "Программы всегда напрямую", list),
             ("process_force_vpn", "Программы всегда через VPN", list),
+            ("games_direct", "Игры всегда напрямую (низкий пинг, правильный регион)", bool),
+            ("game_folders", "Папки с играми", list),
             ("openvpn_exe", "Путь к openvpn.exe", str),
         ]),
     ]

@@ -7,7 +7,8 @@ import re
 
 from . import paths
 from .models import Node
-from .presets import (DISCORD_DOMAINS, DISCORD_PROCESS_REGEX, TELEGRAM_CIDRS, enabled_presets)
+from .presets import (DISCORD_DOMAINS, DISCORD_PROCESS_REGEX, TELEGRAM_CIDRS, enabled_presets,
+                      game_path_regexes)
 
 XRAY_BASE_PORT = 10850
 MIHOMO_BASE_PORT = 10900
@@ -382,6 +383,10 @@ def build_singbox(settings, nodes: list[Node], log_level: str | None = None,
     if s["process_force_vpn"]:
         rules.append({"process_name": s["process_force_vpn"], "outbound": "proxy"})
     rules.append({"rule_set": ["user-direct", "user-direct-ip"], "outbound": "direct"})
+    games = game_path_regexes(s["game_folders"]) if s["games_direct"] else []
+    if games:
+        # before presets and learned rules: a learned "whole program -> VPN" must never catch a game
+        rules.append({"process_path_regex": games, "outbound": "direct"})
 
     def discord_rules():
         if discord_on:

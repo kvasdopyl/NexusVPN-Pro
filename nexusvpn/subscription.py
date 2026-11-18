@@ -8,6 +8,7 @@ import time
 import urllib.request
 from dataclasses import dataclass, asdict
 
+from . import tls
 from .models import Node
 from .parsers import parse_subscription
 from .paths import NODES_FILE
@@ -45,7 +46,7 @@ def _parse_userinfo(h: str) -> dict[str, int]:
 
 
 def fetch(sub: Subscription, proxy_port: int | None = None, timeout: int = 25) -> tuple[list[Node], list[str]]:
-    ctx = ssl.create_default_context()
+    ctx = tls.context()
     if sub.insecure:
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE

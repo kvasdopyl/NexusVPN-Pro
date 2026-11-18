@@ -5,7 +5,7 @@ EXCLUDES = ["tkinter", "unittest", "pydoc", "PySide6.QtWebEngineCore", "PySide6.
             "PySide6.QtTest", "PySide6.QtDesigner", "PySide6.QtOpenGL", "PySide6.QtSvg"]
 
 a = Analysis(["main.py"], pathex=["."], binaries=[], datas=[("assets", "assets")],
-             hiddenimports=["nexusvpn.gui.pages", "nexusvpn.gui.pages2", "yaml", "psutil"],
+             hiddenimports=["nexusvpn.gui.pages", "nexusvpn.gui.pages2", "yaml", "psutil", "certifi"],
              excludes=EXCLUDES, noarchive=False, optimize=1)
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="NexusVPN Pro", icon="assets/icon.ico",

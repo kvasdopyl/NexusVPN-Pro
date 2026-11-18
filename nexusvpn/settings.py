@@ -81,6 +81,12 @@ DEFAULTS: dict[str, Any] = {
     "bypass_lan": True,
     "process_exclusions": [],         # never routed through VPN
     "process_force_vpn": [],          # always through VPN
+    # Games bypass the VPN by default: matchmaking must see the real IP/region and game UDP must not
+    # pay the VPN's latency and loss. A game folder anywhere in the program path matches.
+    "games_direct": True,
+    "game_folders": ["Call of Duty", "Battle.net", "steamapps\\common", "Epic Games", "Riot Games",
+                     "EA Games", "Electronic Arts", "Ubisoft Game Launcher", "XboxGames", "Wargaming.net",
+                     "Lesta Games", "GOG Galaxy\\Games", "Rockstar Games"],
 }
 
 
