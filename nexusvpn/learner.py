@@ -420,13 +420,15 @@ class Learner:
                 self._remember_direct(t.host)
 
     def _is_game(self, path: str) -> bool:
-        if not path or not self.s["games_direct"]:
+        """Games the user configured (direct or VPN) are never re-routed by learning."""
+        if not path:
             return False
-        from .presets import game_path_regexes
-        key = tuple(self.s["game_folders"])
+        from .presets import game_rules
+        key = json.dumps([self.s["games"], self.s["custom_games"]], sort_keys=True)
         if getattr(self, "_game_key", None) != key:
             self._game_key = key
-            self._game_res = [re.compile(r.replace("(?i)", ""), re.I) for r in game_path_regexes(list(key))]
+            direct, proxy = game_rules(self.s)
+            self._game_res = [re.compile(r.replace("(?i)", ""), re.I) for r in direct + proxy]
         return any(r.search(path) for r in self._game_res)
 
     def _remember_direct(self, host: str) -> None:

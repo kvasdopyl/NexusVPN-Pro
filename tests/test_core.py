@@ -188,30 +188,48 @@ GAME_PATHS = {
 }
 
 
-def test_game_folders_match_paths(tmp_path):
-    import re
-    from nexusvpn.presets import game_path_regexes
-    rx = game_path_regexes(Settings(tmp_path / "s.json")["game_folders"])
-    for path, is_game in GAME_PATHS.items():
-        assert any(re.search(r, path) for r in rx) == is_game, path
-
-
-def test_games_direct_before_learned_rules(tmp_path):
+def _games_settings(tmp_path, **games):
     s = Settings(tmp_path / "s.json")
+    s.update(games=games or {"cod": "direct", "battlenet": "direct"})
+    return s
+
+
+def test_game_presets_match_paths(tmp_path):
+    import re
+    from nexusvpn.presets import game_rules
+    direct, proxy = game_rules(_games_settings(tmp_path))
+    assert not proxy
+    for path, is_game in GAME_PATHS.items():
+        assert any(re.search(r, path) for r in direct) == is_game, path
+
+
+def test_games_off_by_default(tmp_path):
+    from nexusvpn.presets import game_rules
+    assert game_rules(Settings(tmp_path / "s.json")) == ([], [])
+
+
+def test_old_games_switch_migrates(tmp_path):
+    import json
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps({"games_direct": True, "game_folders": ["Call of Duty"]}), "utf-8")
+    s = Settings(p)
+    assert s["games"] == {"cod": "direct", "battlenet": "direct"} and "game_folders" not in s.data
+
+
+def test_game_rules_before_learned_rules(tmp_path):
+    s = _games_settings(tmp_path, cod="direct", steam="proxy")
     s.update(routing_mode="smart")
     rules = cb.build_singbox(s, parse_subscription("\n".join(LINKS))[0])["route"]["rules"]
     game = next(i for i, r in enumerate(rules) if "process_path_regex" in r and r["outbound"] == "direct")
-    # preset rule sets exist only once their .srs files are downloaded, so compare with whatever is there
-    proxied = [i for i, r in enumerate(rules) if r.get("outbound") == "proxy" and "rule_set" in r]
-    assert proxied and game < min(proxied)
-    s.update(games_direct=False)
-    rules = cb.build_singbox(s, parse_subscription("\n".join(LINKS))[0])["route"]["rules"]
-    assert not any("process_path_regex" in r and r["outbound"] == "direct" for r in rules)
+    vpn_game = next(i for i, r in enumerate(rules) if "process_path_regex" in r and r["outbound"] == "proxy"
+                    and "steamapps" in r["process_path_regex"][0])
+    learned = next(i for i, r in enumerate(rules) if "learned-proxy" in r.get("rule_set", []))
+    assert game < learned and vpn_game < learned
 
 
 def test_learner_ignores_games(tmp_path):
     from nexusvpn.learner import Learner
-    s = Settings(tmp_path / "s.json")
+    s = _games_settings(tmp_path)
     s.update(learn_min_bytes=500, learn_probe_interval=5)
     lr = Learner.__new__(Learner)
     lr.s, lr._tracks, suspects = s, {}, []
@@ -229,3 +247,43 @@ def test_learner_ignores_games(tmp_path):
     lr._scan(conns(800))
     assert "cod.exe" not in suspects and "Battle.net.exe" not in suspects
     assert "steam.exe" in suspects
+
+
+def _tun(cfg):
+    return next(i for i in cfg["inbounds"] if i["type"] == "tun")
+
+
+def test_full_bypass_only_vpn_addresses_enter_tun(tmp_path):
+    import ipaddress
+    s = Settings(tmp_path / "s.json")
+    s.update(capture_mode="tun", routing_mode="smart", direct_bypass="full")
+    cfg = cb.build_singbox(s, parse_subscription("\n".join(LINKS))[0])
+    nets = [ipaddress.ip_network(c) for c in _tun(cfg)["route_address"]]
+    def inside(ip):
+        return any(ipaddress.ip_address(ip) in n for n in nets)
+    assert inside("198.18.0.5")                      # FakeIP: domains that need the VPN
+    assert inside("149.154.167.51")                  # Telegram
+    assert inside("104.29.157.153")                  # Discord voice (Cloudflare)
+    assert not inside("212.102.63.139")              # Call of Duty match server: never touches the program
+    assert not inside("185.34.106.118")
+    dns = cfg["dns"]["rules"]
+    assert dns[0] == {"rule_set": ["user-direct"], "server": "local"}
+    assert dns[-1]["server"] == "fakeip" and "rule_set" not in dns[-1]   # unknown sites: let smart routing see them
+
+
+def test_core_mode_keeps_default_route(tmp_path):
+    s = Settings(tmp_path / "s.json")
+    s.update(capture_mode="tun", routing_mode="smart", direct_bypass="core")
+    assert "route_address" not in _tun(cb.build_singbox(s, parse_subscription("\n".join(LINKS))[0]))
+
+
+def test_system_proxy_gets_voice_tun(tmp_path):
+    s = Settings(tmp_path / "s.json")
+    s.update(capture_mode="system_proxy", routing_mode="smart")
+    nodes = parse_subscription("\n".join(LINKS))[0]
+    tun = _tun(cb.build_singbox(s, nodes))
+    assert "91.108.4.0/22" in tun["route_address"] and tun["strict_route"] is False
+    assert "198.18.0.0/15" not in tun["route_address"]
+    assert not any(i["type"] == "tun" for i in cb.build_singbox(s, nodes, tun_allowed=False)["inbounds"])
+    s.update(routing_mode="custom")       # no presets -> nothing for the TUN -> no TUN at all
+    assert not any(i["type"] == "tun" for i in cb.build_singbox(s, nodes)["inbounds"])

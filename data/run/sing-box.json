@@ -1,0 +1,481 @@
+{
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
+  "dns": {
+    "servers": [
+      {
+        "tag": "local",
+        "type": "udp",
+        "server": "77.88.8.8"
+      },
+      {
+        "tag": "local-alt",
+        "type": "udp",
+        "server": "1.1.1.1"
+      },
+      {
+        "tag": "remote",
+        "type": "https",
+        "server": "1.1.1.1",
+        "detour": "proxy"
+      },
+      {
+        "tag": "bootstrap",
+        "type": "udp",
+        "server": "1.1.1.1"
+      },
+      {
+        "tag": "fakeip",
+        "type": "fakeip",
+        "inet4_range": "198.18.0.0/15",
+        "inet6_range": "fc00::/18"
+      }
+    ],
+    "rules": [
+      {
+        "rule_set": [
+          "user-direct"
+        ],
+        "server": "local"
+      },
+      {
+        "rule_set": [
+          "user-proxy"
+        ],
+        "query_type": [
+          "A",
+          "AAAA"
+        ],
+        "action": "route",
+        "server": "fakeip",
+        "rewrite_ttl": 5
+      },
+      {
+        "rule_set": [
+          "user-proxy"
+        ],
+        "server": "remote"
+      }
+    ],
+    "final": "local",
+    "strategy": "ipv4_only",
+    "cache_capacity": 8192
+  },
+  "inbounds": [
+    {
+      "type": "tun",
+      "tag": "tun-in",
+      "interface_name": "NexusVPN",
+      "address": [
+        "172.19.0.1/30"
+      ],
+      "mtu": 1400,
+      "auto_route": true,
+      "strict_route": true,
+      "stack": "gvisor",
+      "endpoint_independent_nat": true,
+      "udp_timeout": "5m",
+      "route_exclude_address": [
+        "1.2.3.4/32"
+      ],
+      "route_address": [
+        "198.18.0.0/15",
+        "77.88.8.8/32",
+        "1.1.1.1/32"
+      ]
+    },
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "127.0.0.1",
+      "listen_port": 2080
+    },
+    {
+      "type": "mixed",
+      "tag": "probe-direct",
+      "listen": "127.0.0.1",
+      "listen_port": 2081
+    },
+    {
+      "type": "mixed",
+      "tag": "probe-proxy",
+      "listen": "127.0.0.1",
+      "listen_port": 2082
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "reality",
+      "server": "1.2.3.4",
+      "server_port": 442,
+      "uuid": "00000000-1111-4222-8333-444444444444",
+      "packet_encoding": "xudp",
+      "flow": "xtls-rprx-vision",
+      "tls": {
+        "enabled": true,
+        "server_name": "intel.com",
+        "utls": {
+          "enabled": true,
+          "fingerprint": "firefox"
+        },
+        "reality": {
+          "enabled": true,
+          "public_key": "jNXHt1yRo0vDuchQlIP6Z0ZvjT3KtzVI-T4E7RoLJS0",
+          "short_id": "ab"
+        }
+      }
+    },
+    {
+      "type": "socks",
+      "tag": "xhttp",
+      "server": "127.0.0.1",
+      "server_port": 10850,
+      "version": "5"
+    },
+    {
+      "type": "vless",
+      "tag": "grpc",
+      "server": "1.2.3.4",
+      "server_port": 2053,
+      "uuid": "00000000-1111-4222-8333-444444444444",
+      "packet_encoding": "xudp",
+      "tls": {
+        "enabled": true,
+        "server_name": "a.com",
+        "utls": {
+          "enabled": true,
+          "fingerprint": "chrome"
+        },
+        "reality": {
+          "enabled": true,
+          "public_key": "jNXHt1yRo0vDuchQlIP6Z0ZvjT3KtzVI-T4E7RoLJS0",
+          "short_id": "ab"
+        }
+      },
+      "transport": {
+        "type": "grpc",
+        "service_name": "g"
+      }
+    },
+    {
+      "type": "vless",
+      "tag": "ws",
+      "server": "1.2.3.4",
+      "server_port": 2083,
+      "uuid": "00000000-1111-4222-8333-444444444444",
+      "packet_encoding": "xudp",
+      "tls": {
+        "enabled": true,
+        "server_name": "1.2.3.4",
+        "insecure": true,
+        "alpn": [
+          "http/1.1"
+        ]
+      },
+      "transport": {
+        "type": "ws",
+        "path": "/ws"
+      }
+    },
+    {
+      "type": "hysteria2",
+      "tag": "hy2",
+      "server": "1.2.3.4",
+      "server_port": 8443,
+      "password": "pass",
+      "tls": {
+        "enabled": true,
+        "server_name": "1.2.3.4",
+        "insecure": true,
+        "alpn": [
+          "h3"
+        ]
+      },
+      "obfs": {
+        "type": "salamander",
+        "password": "x"
+      }
+    },
+    {
+      "type": "trojan",
+      "tag": "trojan",
+      "server": "1.2.3.4",
+      "server_port": 2087,
+      "password": "pw",
+      "tls": {
+        "enabled": true,
+        "server_name": "intel.com",
+        "utls": {
+          "enabled": true,
+          "fingerprint": "chrome"
+        },
+        "reality": {
+          "enabled": true,
+          "public_key": "jNXHt1yRo0vDuchQlIP6Z0ZvjT3KtzVI-T4E7RoLJS0",
+          "short_id": "ab"
+        }
+      }
+    },
+    {
+      "type": "vmess",
+      "tag": "vm",
+      "server": "1.2.3.4",
+      "server_port": 9443,
+      "uuid": "00000000-1111-4222-8333-444444444444",
+      "security": "auto",
+      "alter_id": 0,
+      "packet_encoding": "xudp",
+      "tls": {
+        "enabled": true,
+        "server_name": "1.2.3.4",
+        "insecure": true,
+        "alpn": [
+          "http/1.1"
+        ]
+      },
+      "transport": {
+        "type": "ws",
+        "path": "/vm"
+      }
+    },
+    {
+      "type": "shadowsocks",
+      "tag": "ss",
+      "server": "1.2.3.4",
+      "server_port": 10443,
+      "method": "2022-blake3-aes-256-gcm",
+      "password": "a2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2s="
+    },
+    {
+      "type": "tuic",
+      "tag": "tuic",
+      "server": "1.2.3.4",
+      "server_port": 443,
+      "uuid": "00000000-1111-4222-8333-444444444444",
+      "password": "pw",
+      "congestion_control": "bbr",
+      "udp_relay_mode": "native",
+      "zero_rtt_handshake": false,
+      "heartbeat": "10s",
+      "tls": {
+        "enabled": true,
+        "server_name": "a.com",
+        "alpn": [
+          "h3"
+        ]
+      }
+    },
+    {
+      "type": "socks",
+      "tag": "socks",
+      "server": "1.2.3.4",
+      "server_port": 1080,
+      "version": "5",
+      "username": "user",
+      "password": "pass"
+    },
+    {
+      "type": "urltest",
+      "tag": "auto",
+      "outbounds": [
+        "reality",
+        "xhttp",
+        "grpc",
+        "ws",
+        "hy2",
+        "trojan",
+        "vm",
+        "ss",
+        "wg",
+        "tuic",
+        "socks"
+      ],
+      "url": "https://www.gstatic.com/generate_204",
+      "interval": "180s",
+      "tolerance": 80,
+      "idle_timeout": "30m",
+      "interrupt_exist_connections": false
+    },
+    {
+      "type": "selector",
+      "tag": "proxy",
+      "outbounds": [
+        "auto",
+        "reality",
+        "xhttp",
+        "grpc",
+        "ws",
+        "hy2",
+        "trojan",
+        "vm",
+        "ss",
+        "wg",
+        "tuic",
+        "socks"
+      ],
+      "default": "auto",
+      "interrupt_exist_connections": true
+    },
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "route": {
+    "rules": [
+      {
+        "action": "sniff",
+        "timeout": "300ms"
+      },
+      {
+        "protocol": "dns",
+        "action": "hijack-dns"
+      },
+      {
+        "inbound": [
+          "probe-direct"
+        ],
+        "outbound": "direct"
+      },
+      {
+        "inbound": [
+          "probe-proxy"
+        ],
+        "outbound": "proxy"
+      },
+      {
+        "process_name": [
+          "sing-box.exe",
+          "xray.exe",
+          "mihomo.exe",
+          "openvpn.exe",
+          "sing-box",
+          "xray",
+          "mihomo",
+          "openvpn"
+        ],
+        "outbound": "direct"
+      },
+      {
+        "ip_cidr": [
+          "1.2.3.4/32"
+        ],
+        "outbound": "direct"
+      },
+      {
+        "ip_is_private": true,
+        "outbound": "direct"
+      },
+      {
+        "ip_version": 6,
+        "network": "udp",
+        "action": "reject"
+      },
+      {
+        "rule_set": [
+          "user-direct",
+          "user-direct-ip"
+        ],
+        "outbound": "direct"
+      },
+      {
+        "rule_set": [
+          "user-proxy",
+          "user-proxy-ip"
+        ],
+        "outbound": "proxy"
+      },
+      {
+        "network": "udp",
+        "port": 443,
+        "action": "reject"
+      }
+    ],
+    "rule_set": [
+      {
+        "type": "local",
+        "tag": "user-proxy",
+        "format": "source",
+        "path": "/home/user/src/NexusVPN-Pro/data/rules/user-proxy.json"
+      },
+      {
+        "type": "local",
+        "tag": "user-direct",
+        "format": "source",
+        "path": "/home/user/src/NexusVPN-Pro/data/rules/user-direct.json"
+      },
+      {
+        "type": "local",
+        "tag": "user-proxy-ip",
+        "format": "source",
+        "path": "/home/user/src/NexusVPN-Pro/data/rules/user-proxy-ip.json"
+      },
+      {
+        "type": "local",
+        "tag": "user-direct-ip",
+        "format": "source",
+        "path": "/home/user/src/NexusVPN-Pro/data/rules/user-direct-ip.json"
+      },
+      {
+        "type": "local",
+        "tag": "learned-proxy",
+        "format": "source",
+        "path": "/home/user/src/NexusVPN-Pro/data/rules/learned-proxy.json"
+      },
+      {
+        "type": "local",
+        "tag": "learned-proxy-ip",
+        "format": "source",
+        "path": "/home/user/src/NexusVPN-Pro/data/rules/learned-proxy-ip.json"
+      },
+      {
+        "type": "local",
+        "tag": "learned-direct",
+        "format": "source",
+        "path": "/home/user/src/NexusVPN-Pro/data/rules/learned-direct.json"
+      }
+    ],
+    "final": "direct",
+    "auto_detect_interface": true,
+    "find_process": true,
+    "default_domain_resolver": "local"
+  },
+  "experimental": {
+    "cache_file": {
+      "enabled": true,
+      "path": "/home/user/src/NexusVPN-Pro/data/run/cache.db",
+      "store_fakeip": true
+    },
+    "clash_api": {
+      "external_controller": "127.0.0.1:9090",
+      "secret": "x",
+      "default_mode": "rule"
+    }
+  },
+  "endpoints": [
+    {
+      "type": "wireguard",
+      "tag": "wg",
+      "address": [
+        "10.0.0.2/32"
+      ],
+      "private_key": "YNXtAzepDqRv9H52osJVDQnznT5AL11eMRMnBTkHeEo=",
+      "mtu": 1420,
+      "peers": [
+        {
+          "address": "1.2.3.4",
+          "port": 51820,
+          "public_key": "JQkrPrE8fW7Fb+V7ZpRHoIHiIT1xRuTeRG4vyt36lRY=",
+          "allowed_ips": [
+            "0.0.0.0/0",
+            "::/0"
+          ],
+          "persistent_keepalive_interval": 25
+        }
+      ]
+    }
+  ]
+}

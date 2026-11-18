@@ -21,7 +21,7 @@ from .widgets import btn, group_header, page_title, selected_data, set_row, tabl
 MODES = [("global", "Всё через VPN", "mode_global"),
          ("custom", "Своя маршрутизация", "mode_custom"),
          ("smart", "Умная маршрутизация", "mode_smart")]
-CAPTURE = [("tun", "TUN — весь трафик всех программ"), ("system_proxy", "Системный прокси (без прав админа)"),
+CAPTURE = [("tun", "TUN — весь трафик всех программ"), ("system_proxy", "Системный прокси (браузеры, Discord, Telegram)"),
            ("both", "TUN + системный прокси")]
 
 

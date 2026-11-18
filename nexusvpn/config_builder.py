@@ -7,8 +7,10 @@ import re
 
 from . import paths
 from .models import Node
-from .presets import (DISCORD_DOMAINS, DISCORD_PROCESS_REGEX, TELEGRAM_CIDRS, enabled_presets,
-                      game_path_regexes)
+from .discord_voice import DISCORD_VOICE_CIDRS
+from .presets import (DISCORD_DOMAINS, DISCORD_PROCESS_REGEX, TELEGRAM_CIDRS, enabled_presets, game_rules)
+
+FAKEIP_V4, FAKEIP_V6 = "198.18.0.0/15", "fc00::/18"
 
 XRAY_BASE_PORT = 10850
 MIHOMO_BASE_PORT = 10900
@@ -293,8 +295,58 @@ def ensure_rule_files() -> None:
             p.write_text(json.dumps({"version": 3, "rules": [{"domain": ["placeholder.invalid"]}]}), "utf-8")
 
 
+def tun_scope(s, mode: str, tun_allowed: bool = True) -> str:
+    """all     — every destination goes through sing-box
+    include — only what may need the VPN enters the TUN; everything else never touches the program
+    voice   — «Системный прокси»: a small TUN only for Discord/Telegram so voice and calls work too
+    none    — no TUN"""
+    capture = s["capture_mode"]
+    if capture == "both" or (capture == "tun" and (mode == "global" or s["direct_bypass"] != "full")):
+        return "all"
+    if capture == "tun":
+        return "include"
+    voice = s["proxy_voice_tun"] and tun_allowed and mode != "direct" and (s["preset_discord"] or s["preset_telegram"])
+    return "voice" if voice else "none"
+
+
+FAKEIP_TTL = 5   # short: once smart routing files a site as direct, the next lookup gets the real address
+
+
+def _rule_file_values(path, key: str) -> list[str]:
+    try:
+        data = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [c for r in data.get("rules", []) for c in r.get(key, [])]
+
+
+def _rule_file_cidrs(path) -> list[str]:
+    return _rule_file_values(path, "ip_cidr")
+
+
+def tun_routes(s, scope: str, use_presets: bool) -> list[str]:
+    """Destinations that enter the TUN when it is not the default route. Domains that need the VPN
+    resolve to FakeIP, so the FakeIP range carries them; raw-IP services are listed explicitly."""
+    discord = use_presets and s["preset_discord"]
+    telegram = use_presets and s["preset_telegram"]
+    out = [] if scope == "voice" else [FAKEIP_V4] + ([FAKEIP_V6] if s["ipv6_mode"] != "off" else [])
+    if telegram:
+        out += TELEGRAM_CIDRS
+    if discord:
+        out += DISCORD_VOICE_CIDRS
+    if scope == "include":
+        out += _rule_file_cidrs(paths.USER_PROXY_IP_RS) + _rule_file_cidrs(paths.LEARNED_PROXY_IP_RS)
+        # the router's / chosen DNS servers: queries to them are answered by sing-box (FakeIP)
+        for value in (s["dns_local"], s["dns_local_alt"]):
+            if _is_ip((value or "").strip()):
+                out.append(_cidr(value.strip()))
+    seen: set[str] = set()
+    return [c for c in out if not (c in seen or seen.add(c))]
+
+
 def build_singbox(settings, nodes: list[Node], log_level: str | None = None,
-                  ifaces: dict[str, str] | None = None, exclude_ips: list[str] | None = None) -> dict:
+                  ifaces: dict[str, str] | None = None, exclude_ips: list[str] | None = None,
+                  tun_allowed: bool = True) -> dict:
     """ifaces: tag -> OS adapter of a connected OpenVPN/IKEv2 tunnel; exclude_ips: resolved server IPs."""
     s = settings
     ifaces = ifaces or {}
@@ -305,7 +357,7 @@ def build_singbox(settings, nodes: list[Node], log_level: str | None = None,
     mode = s["routing_mode"]
     if mode == "rules":
         mode = "custom"
-    capture = s["capture_mode"]
+    scope = tun_scope(s, mode, tun_allowed)
     p_direct, p_proxy = probe_ports(s)
     helpers = assign_helpers(nodes)
 
@@ -334,6 +386,8 @@ def build_singbox(settings, nodes: list[Node], log_level: str | None = None,
     groups.append({"type": "selector", "tag": "proxy", "outbounds": ["auto", *tags], "default": active,
                    "interrupt_exist_connections": True})
     use_presets = mode in ("smart", "global") or (mode == "custom" and s["custom_use_presets"])
+    if scope == "voice" and not tun_routes(s, scope, use_presets):
+        scope = "none"   # an empty route_address would make the TUN the default route
     discord_on = bool(s["preset_discord"]) and use_presets
     discord_out = "proxy"
     if discord_on and s["discord_isolate"] and udp_tags:
@@ -383,10 +437,12 @@ def build_singbox(settings, nodes: list[Node], log_level: str | None = None,
     if s["process_force_vpn"]:
         rules.append({"process_name": s["process_force_vpn"], "outbound": "proxy"})
     rules.append({"rule_set": ["user-direct", "user-direct-ip"], "outbound": "direct"})
-    games = game_path_regexes(s["game_folders"]) if s["games_direct"] else []
-    if games:
-        # before presets and learned rules: a learned "whole program -> VPN" must never catch a game
-        rules.append({"process_path_regex": games, "outbound": "direct"})
+    game_direct, game_proxy = game_rules(s)
+    # before presets and learned rules: a learned "whole program -> VPN" must never catch a game
+    if game_direct:
+        rules.append({"process_path_regex": game_direct, "outbound": "direct"})
+    if game_proxy:
+        rules.append({"process_path_regex": game_proxy, "outbound": "proxy"})
 
     def discord_rules():
         if discord_on:
@@ -441,20 +497,38 @@ def build_singbox(settings, nodes: list[Node], log_level: str | None = None,
         dns_final = "local"
     else:
         dns_final = "local"
-        if s["dns_fakeip"]:
-            dns_servers.append({"tag": "fakeip", "type": "fakeip", "inet4_range": "198.18.0.0/15",
-                                "inet6_range": "fc00::/18"})
-            dns_rules.append({"rule_set": proxy_sets, "query_type": ["A", "AAAA"], "server": "fakeip"})
+        fakeip = s["dns_fakeip"] or scope == "include"
+        addr = ["A", "AAAA"]
+        if fakeip:
+            dns_servers.append({"tag": "fakeip", "type": "fakeip", "inet4_range": FAKEIP_V4,
+                                "inet6_range": FAKEIP_V6})
+            # the user's direct list always wins and gets real addresses -> bypasses the TUN
+            dns_rules.append({"rule_set": ["user-direct"], "server": "local"})
+            dns_rules.append({"rule_set": proxy_sets, "query_type": addr, "action": "route", "server": "fakeip",
+                              "rewrite_ttl": FAKEIP_TTL})
+            if discord_on:
+                dns_rules.append({"domain_suffix": DISCORD_DOMAINS, "query_type": addr, "action": "route",
+                                  "server": "fakeip", "rewrite_ttl": FAKEIP_TTL})
         dns_rules.append({"rule_set": proxy_sets, "server": "remote"})
         if discord_on:
             dns_rules.append({"domain_suffix": DISCORD_DOMAINS, "server": "remote"})
+        if scope == "include":
+            known_direct = [t for t in preset_direct if t != "geoip-ru"] + (["learned-direct"] if mode == "smart" else [])
+            if known_direct:
+                dns_rules.append({"rule_set": known_direct, "server": "local"})
+            # still unknown: smart routing must see it to learn; a program the user sends via VPN must be
+            # caught even when it uses ordinary domains
+            vpn_programs = bool(game_proxy) or bool(_rule_file_values(paths.USER_PROXY_RS, "process_name"))
+            if mode == "smart" or vpn_programs:
+                dns_rules.append({"query_type": addr, "action": "route", "server": "fakeip",
+                                  "rewrite_ttl": FAKEIP_TTL})
     dns = {"servers": dns_servers, "rules": dns_rules, "final": dns_final,
            "strategy": s["dns_strategy"] if s["ipv6_mode"] != "off" else "ipv4_only",
            "cache_capacity": 8192}
 
     # ---- inbounds ----
     inbounds: list[dict] = []
-    if capture in ("tun", "both"):
+    if scope != "none":
         tun = {"type": "tun", "tag": "tun-in", "interface_name": paths.APP_SHORT,
                "address": [s["tun_ipv4"]] + (["fdfe:dcba:9876::1/126"] if s["ipv6_mode"] != "off" else []),
                "mtu": int(s["tun_mtu"]), "auto_route": True, "strict_route": bool(s["strict_route"]),
@@ -463,6 +537,11 @@ def build_singbox(settings, nodes: list[Node], log_level: str | None = None,
         if server_ips:
             # VPN servers (incl. kernel-level IKEv2/OpenVPN-DCO traffic) must never enter our own TUN
             tun["route_exclude_address"] = [_cidr(ip) for ip in server_ips]
+        if scope in ("include", "voice"):
+            tun["route_address"] = tun_routes(s, scope, use_presets)
+        if scope == "voice":
+            # the browser uses the proxy; this TUN must not take over the system DNS
+            tun["strict_route"] = False
         inbounds.append(tun)
     inbounds.append({"type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": int(s["mixed_port"])})
     inbounds.append({"type": "mixed", "tag": "probe-direct", "listen": "127.0.0.1", "listen_port": p_direct})
@@ -478,7 +557,7 @@ def build_singbox(settings, nodes: list[Node], log_level: str | None = None,
                   "find_process": True, "default_domain_resolver": "local"},
         "experimental": {
             "cache_file": {"enabled": True, "path": str(paths.RUN_DIR / "cache.db"),
-                           "store_fakeip": bool(s["dns_fakeip"])},
+                           "store_fakeip": True},
             "clash_api": {"external_controller": f"127.0.0.1:{int(s['clash_api_port'])}",
                           "secret": s["clash_secret"], "default_mode": "rule"},
         },
@@ -520,10 +599,10 @@ def _doh(tag: str, url: str, detour: str) -> dict:
 
 
 def write_configs(settings, nodes: list[Node], ifaces: dict[str, str] | None = None,
-                  exclude_ips: list[str] | None = None) -> tuple[dict, dict | None, str | None]:
+                  exclude_ips: list[str] | None = None, tun_allowed: bool = True) -> tuple[dict, dict | None, str | None]:
     paths.ensure_dirs()
     enabled = [n for n in nodes if n.enabled]
-    sb = build_singbox(settings, nodes, ifaces=ifaces, exclude_ips=exclude_ips)
+    sb = build_singbox(settings, nodes, ifaces=ifaces, exclude_ips=exclude_ips, tun_allowed=tun_allowed)
     xr = build_xray(enabled, settings["log_level"])
     mh = build_mihomo(enabled, settings["log_level"])
     paths.SINGBOX_CONFIG.write_text(json.dumps(sb, ensure_ascii=False, indent=2), "utf-8")

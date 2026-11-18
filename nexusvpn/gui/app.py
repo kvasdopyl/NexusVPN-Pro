@@ -20,6 +20,7 @@ from ..settings import Settings
 from ..subscription import NodeStore
 from .common import COLORS, STATE_TEXT, THEME, Bridge, apply_dark_theme, run_bg, status_icon
 from .pages import MODES, HomePage, ServersPage
+from .pages3 import GamesPage, NoWheelUntilClicked
 from .pages2 import (AboutPage, ConnectionsPage, CoresPage, CustomRoutingPage, LogsPage, SettingsPage,
                      SmartPage, UninstallPage)
 
@@ -96,6 +97,8 @@ class NexusApp:
         atexit.register(self._emergency_cleanup)
 
         apply_dark_theme(qapp)
+        self._no_wheel = NoWheelUntilClicked(qapp)
+        qapp.installEventFilter(self._no_wheel)
         qapp.setStyleSheet(THEME)
         self.win = MainWindow(self)
         self.home = HomePage(self)
@@ -108,9 +111,11 @@ class NexusApp:
         self.logs = LogsPage(self, self.ring)
         self.about = AboutPage(self)
         self.uninstall_page = UninstallPage(self)
+        self.games = GamesPage(self)
         self.page_index = {}
         for key, title, page in (("home", "  Главная", self.home), ("servers", "  Серверы", self.servers),
                                  ("custom", "  Своя маршрутизация", self.custom),
+                                 ("games", "  Игры", self.games),
                                  ("smart", "  Умная маршрутизация", self.smart),
                                  ("conns", "  Соединения", self.conns), ("cores", "  Обновления", self.cores),
                                  ("settings", "  Настройки", self.settings_page), ("logs", "  Журнал", self.logs),

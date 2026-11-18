@@ -93,6 +93,13 @@ class CustomRoutingPage(QWidget):
             cols.addWidget(g, 1)
         v.addLayout(cols, 1)
 
+        pick = QHBoxLayout()
+        pick.addWidget(btn("Выбрать из запущенных программ…", self.pick_programs, "primary"))
+        pick.addWidget(btn("Выбрать из открытых сайтов…", self.pick_sites))
+        pick.addWidget(HelpButton("pickers"))
+        pick.addStretch()
+        v.addLayout(pick)
+
         qa_head = QHBoxLayout()
         qa_head.addWidget(QLabel("Быстро добавить в «Через VPN»:"))
         qa_head.addWidget(HelpButton("quick_add"))
@@ -158,6 +165,35 @@ class CustomRoutingPage(QWidget):
         self.app.status(f"Сохранено: через VPN — {len(parsed['proxy'])}, напрямую — {len(parsed['direct'])}. "
                         "Применено без перезапуска.")
         self.app.smart.reload()
+
+    def add_entries(self, verdict: str, values: list[str]) -> None:
+        """Put values into one list, take them out of the other, save right away."""
+        other = "direct" if verdict == "proxy" else "proxy"
+        low = {x.lower() for x in values}
+        ed_o = self.editors[other]
+        ed_o.setPlainText("\n".join(ln for ln in ed_o.toPlainText().splitlines()
+                                    if ln.split("#", 1)[0].strip().lower() not in low))
+        ed = self.editors[verdict]
+        cur = ed.toPlainText().rstrip()
+        have = {ln.split("#", 1)[0].strip().lower() for ln in cur.splitlines()}
+        add = [x for x in values if x.lower() not in have]
+        if add:
+            ed.setPlainText((cur + "\n" if cur else "") + "\n".join(add))
+        self.save()
+        where = "через VPN" if verdict == "proxy" else "напрямую"
+        self.app.status(f"{', '.join(values[:4])}{' …' if len(values) > 4 else ''} — теперь {where}")
+
+    def pick_programs(self) -> None:
+        from .pages3 import ProcessPicker
+        ProcessPicker(self, lambda verdict, exes: self.add_entries(
+            verdict, sorted({os.path.basename(e.replace("\\", "/")) for e in exes}))).exec()
+
+    def pick_sites(self) -> None:
+        from .pages3 import SitePicker
+        if self.app.engine.state != "running":
+            QMessageBox.information(self, "Сайты", "Сначала включите VPN и откройте нужные сайты.")
+            return
+        SitePicker(self, self.app, self.add_entries).exec()
 
     def quick_add(self, name: str) -> None:
         ed = self.editors["proxy"]
@@ -621,6 +657,12 @@ class CoresPage(QWidget):
 # ======================================================================= Settings
 class SettingsPage(QWidget):
     FIELDS = [
+        ("Трафик мимо VPN", [
+            ("direct_bypass", "Что не через VPN", [
+                ("full", "Мимо программы — напрямую через вашу сетевую карту"),
+                ("core", "Через программу (совместимость со всеми правилами)")]),
+            ("proxy_voice_tun", "Discord и Telegram работают и в режиме «Системный прокси»", bool),
+        ]),
         ("Подключение", [
             ("tun_stack", "Стек TUN", ["gvisor", "mixed", "system"]),
             ("tun_mtu", "MTU", (1200, 9000)),
@@ -669,8 +711,7 @@ class SettingsPage(QWidget):
             ("log_max_mb", "Размер файла журнала, МБ", (1, 200)),
             ("process_exclusions", "Программы всегда напрямую", list),
             ("process_force_vpn", "Программы всегда через VPN", list),
-            ("games_direct", "Игры всегда напрямую (низкий пинг, правильный регион)", bool),
-            ("game_folders", "Папки с играми", list),
+
             ("openvpn_exe", "Путь к openvpn.exe", str),
         ]),
     ]
@@ -719,7 +760,9 @@ class SettingsPage(QWidget):
         if isinstance(kind, list) and kind:
             cb = QComboBox()
             cb.setEditable(key == "udp_timeout")
-            cb.addItems(kind)
+            for item in kind:
+                value, text = item if isinstance(item, tuple) else (item, item)
+                cb.addItem(text, value)
             return cb
         return QLineEdit()
 
@@ -736,7 +779,11 @@ class SettingsPage(QWidget):
             elif kind is list:
                 w.setText(", ".join(val or []))
             elif isinstance(kind, list):
-                w.setCurrentText(str(val))
+                i = w.findData(val)
+                if i >= 0:
+                    w.setCurrentIndex(i)
+                else:
+                    w.setCurrentText(str(val))
             else:
                 w.setText(str(val))
 
@@ -751,7 +798,8 @@ class SettingsPage(QWidget):
             elif kind is list:
                 s[key] = [x.strip() for x in w.text().split(",") if x.strip()]
             elif isinstance(kind, list):
-                s[key] = w.currentText()
+                data = w.currentData()
+                s[key] = data if data is not None and w.currentText() == w.itemText(w.currentIndex()) else w.currentText()
             else:
                 s[key] = w.text().strip()
         s.save()

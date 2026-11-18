@@ -4,7 +4,7 @@ from pathlib import Path
 
 APP_NAME = "NexusVPN Pro"
 APP_SHORT = "NexusVPN"
-APP_VERSION = "2.1.1"
+APP_VERSION = "2.2.0"
 APP_DESCRIPTION = ("NexusVPN Pro — Профессиональный VPN-клиент для Windows с интеллектуальной самообучающейся "
                    "маршрутизацией (Smart Auto-Split Tunneling) и поддержкой всех современных протоколов")
 

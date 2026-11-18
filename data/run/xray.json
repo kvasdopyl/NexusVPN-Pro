@@ -1,0 +1,68 @@
+{
+  "log": {
+    "loglevel": "info"
+  },
+  "inbounds": [
+    {
+      "tag": "in0",
+      "listen": "127.0.0.1",
+      "port": 10850,
+      "protocol": "socks",
+      "settings": {
+        "auth": "noauth",
+        "udp": true,
+        "ip": "127.0.0.1"
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "vless",
+      "tag": "out0",
+      "settings": {
+        "vnext": [
+          {
+            "address": "1.2.3.4",
+            "port": 443,
+            "users": [
+              {
+                "id": "00000000-1111-4222-8333-444444444444",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "xhttpSettings": {
+          "path": "/x",
+          "mode": "auto",
+          "extra": {
+            "xPaddingBytes": "100-1000"
+          }
+        },
+        "security": "reality",
+        "realitySettings": {
+          "serverName": "www.cloudflare.com",
+          "fingerprint": "chrome",
+          "publicKey": "jNXHt1yRo0vDuchQlIP6Z0ZvjT3KtzVI-T4E7RoLJS0",
+          "shortId": "ab",
+          "spiderX": ""
+        }
+      }
+    }
+  ],
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": [
+      {
+        "type": "field",
+        "inboundTag": [
+          "in0"
+        ],
+        "outboundTag": "out0"
+      }
+    ]
+  }
+}

@@ -60,11 +60,59 @@ def game_path_regexes(folders: list[str]) -> list[str]:
     """Folder names -> process_path_regex; a folder anywhere in the program path marks a game."""
     out = []
     for f in folders:
-        f = f.strip().strip("\\/").replace("/", "\\")
+        f = f.strip().replace("/", "\\").rstrip("\\")
+        if ":" in f or f.startswith("\\\\"):
+            # a full folder chosen by the user: everything inside it
+            out.append(r"(?i)^" + re.escape(f) + r"\\")
+            continue
+        f = f.strip("\\")
         if f:
             # "Call of Duty" also covers "Call of Duty HQ", "Call of Duty Black Ops 7"
             out.append(r"(?i)\\" + re.escape(f) + r"[^\\]*\\")
     return out
+
+
+# key, name, folders (any folder in the program path; "Call of Duty" also matches "Call of Duty HQ"), note
+GAME_PRESETS: list[tuple[str, str, list[str], str]] = [
+    ("cod", "Call of Duty (Warzone, DMZ, MW, BO)", ["Call of Duty"], "Steam, Battle.net, Xbox"),
+    ("battlenet", "Battle.net и игры Blizzard", ["Battle.net", "Overwatch", "Diablo IV", "Diablo III",
+                                                 "World of Warcraft", "Hearthstone", "StarCraft II"], ""),
+    ("steam", "Все игры Steam", ["steamapps\\common"], "CS2, Dota 2, PUBG, Rust, Apex… (сам Steam не входит)"),
+    ("cs2", "Counter-Strike 2", ["Counter-Strike Global Offensive"], "только CS2"),
+    ("dota2", "Dota 2", ["dota 2 beta"], "только Dota 2"),
+    ("pubg", "PUBG: Battlegrounds", ["PUBG", "TslGame"], ""),
+    ("apex", "Apex Legends", ["Apex Legends", "Apex"], ""),
+    ("epic", "Epic Games (Fortnite и др.)", ["Epic Games", "Fortnite"], ""),
+    ("riot", "Riot Games (Valorant, League of Legends)", ["Riot Games", "VALORANT", "League of Legends"], ""),
+    ("ea", "EA app (Battlefield, FC, Apex)", ["EA Games", "Electronic Arts", "EA app"], ""),
+    ("ubisoft", "Ubisoft Connect (R6 Siege и др.)", ["Ubisoft Game Launcher", "Ubisoft"], ""),
+    ("xbox", "Игры Xbox / Microsoft Store", ["XboxGames", "ModifiableWindowsApps"], ""),
+    ("tanks", "Мир танков / World of Tanks", ["Lesta Games", "Wargaming.net", "World_of_Tanks", "Tanki"], ""),
+    ("warthunder", "War Thunder", ["War Thunder", "WarThunder"], ""),
+    ("tarkov", "Escape from Tarkov", ["Battlestate Games", "EscapeFromTarkov"], ""),
+    ("hoyo", "Genshin, Honkai, ZZZ (HoYoverse)", ["Genshin Impact", "HoYoPlay", "Star Rail", "ZenlessZoneZero"],
+     ""),
+    ("vkplay", "VK Play (Warface, Калибр и др.)", ["VK Play", "GameCenter", "Warface"], ""),
+    ("minecraft", "Minecraft", [".minecraft", "Minecraft Launcher", "TLauncher"], ""),
+    ("roblox", "Roblox", ["Roblox"], ""),
+    ("rockstar", "Rockstar (GTA V, RDR2)", ["Rockstar Games", "Grand Theft Auto V"], ""),
+    ("gog", "Игры GOG", ["GOG Galaxy\\Games", "GOG Games"], ""),
+]
+GAME_MODES = {"off": "Не трогать", "direct": "Напрямую (мимо VPN)", "proxy": "Через VPN"}
+
+
+def game_rules(settings) -> tuple[list[str], list[str]]:
+    """-> (direct regexes, proxy regexes) from enabled presets and the user's own games."""
+    by_mode: dict[str, list[str]] = {"direct": [], "proxy": []}
+    chosen = settings["games"] or {}
+    for key, _name, folders, _note in GAME_PRESETS:
+        mode = chosen.get(key, "off")
+        if mode in by_mode:
+            by_mode[mode] += folders
+    for g in settings["custom_games"] or []:
+        if g.get("mode") in by_mode and g.get("match"):
+            by_mode[g["mode"]].append(g["match"])
+    return game_path_regexes(by_mode["direct"]), game_path_regexes(by_mode["proxy"])
 
 
 DISCORD_PROCESS_REGEX = r"(?i)\\Discord(PTB|Canary|Development)?\\"

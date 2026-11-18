@@ -17,6 +17,7 @@ import psutil
 from . import config_builder, cores, paths, winutil
 from .clash_api import ClashAPI
 from .learner import Learner
+from .route_watch import RouteWatcher, flush_dns
 from .tunnels import TunnelError, kill_orphans, make_tunnel
 from .presets import enabled_presets
 from .subscription import NodeStore, fetch, subs_from_settings, subs_to_settings
@@ -154,6 +155,8 @@ class Engine:
         self._ifaces: frozenset = frozenset()
         self._stop_evt = threading.Event()
         self.learner = Learner(settings, self.api, self.emit)
+        self.routes: RouteWatcher | None = None
+        self.scope = "none"
         threading.Thread(target=self._watchdog, name="watchdog", daemon=True).start()
 
     # ------------------------------------------------------------------ helpers
@@ -197,10 +200,15 @@ class Engine:
             raise RuntimeError("Режим TUN требует прав администратора. Перезапустите программу от имени "
                                "администратора или выберите режим «Системный прокси».")
         kill_stale()
-        if self.s["capture_mode"] in ("tun", "both"):
+        flush_dns()
+        if self.s["capture_mode"] in ("tun", "both") or self.s["proxy_voice_tun"]:
             winutil.allow_in_firewall([str(paths.core_path(n)) for n in ("sing-box", "xray", "mihomo")])
         ifaces, exclude = self._start_tunnels()
-        _, xr, mh = config_builder.write_configs(self.s, self.store.nodes, ifaces=ifaces, exclude_ips=exclude)
+        sb, xr, mh = config_builder.write_configs(self.s, self.store.nodes, ifaces=ifaces, exclude_ips=exclude,
+                                                  tun_allowed=winutil.is_admin())
+        tun = next((i for i in sb["inbounds"] if i["type"] == "tun"), None)
+        self.scope = "none" if not tun else ("all" if "route_address" not in tun
+                                             else ("include" if self.s["capture_mode"] == "tun" else "voice"))
         chk = subprocess.run([str(sb_exe), "check", "-c", str(paths.SINGBOX_CONFIG)], capture_output=True,
                              text=True, timeout=30, creationflags=winutil.NO_WINDOW, cwd=str(paths.RUN_DIR))
         if chk.returncode != 0:
@@ -246,6 +254,9 @@ class Engine:
             winutil.set_system_proxy(int(self.s["mixed_port"]))
         self._ifaces = self._iface_snapshot()
         self.learner.start()
+        if self.scope == "include":
+            self.routes = RouteWatcher()
+            self.routes.start()
 
     def _start_tunnels(self) -> tuple[dict[str, str], list[str]]:
         """Bring up OpenVPN/IKEv2 adapters in parallel before sing-box. A failed tunnel only
@@ -300,8 +311,12 @@ class Engine:
                 return
             self._set_state("stopping")
             self.learner.stop()
+            if self.routes:
+                self.routes.stop()
+                self.routes = None
             winutil.clear_system_proxy(int(self.s["mixed_port"]))
             self._kill_children()
+            flush_dns()   # cached FakeIP answers would point nowhere once the TUN is gone
             self._set_state("stopped")
             log.info("engine stopped")
 
