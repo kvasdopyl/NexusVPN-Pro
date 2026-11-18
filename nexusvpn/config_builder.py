@@ -423,8 +423,8 @@ def build_singbox(settings, nodes: list[Node], log_level: str | None = None,
 
     # ---- dns ----
     dns_servers = [
-        {"tag": "local", "type": "udp", "server": s["dns_local"]},
-        {"tag": "local-alt", "type": "udp", "server": s["dns_local_alt"]},
+        _plain_dns("local", s["dns_local"]),
+        _plain_dns("local-alt", s["dns_local_alt"]),
         _doh("remote", s["dns_remote"], "proxy"),
         {"tag": "bootstrap", "type": "udp", "server": "1.1.1.1"},
     ]
@@ -481,6 +481,22 @@ def build_singbox(settings, nodes: list[Node], log_level: str | None = None,
     if endpoints:
         cfg["endpoints"] = endpoints
     return cfg
+
+
+def _plain_dns(tag: str, value: str) -> dict:
+    """'dhcp' / 'auto' = the DNS the router hands out (what Windows uses without VPN)."""
+    v = (value or "").strip().lower()
+    if v in ("", "dhcp", "auto", "router"):
+        return {"tag": tag, "type": "dhcp"}
+    if "://" in v:
+        return _doh_direct(tag, value)
+    return {"tag": tag, "type": "udp", "server": value.strip()}
+
+
+def _doh_direct(tag: str, url: str) -> dict:
+    d = _doh(tag, url, "direct")
+    d.pop("detour", None)
+    return d
 
 
 def _doh(tag: str, url: str, detour: str) -> dict:

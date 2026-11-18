@@ -114,6 +114,25 @@ def system_proxy_is_ours(port: int) -> bool:
         return False
 
 
+# ------------------------------------------------------------------ firewall
+def allow_in_firewall(exe_paths: list[str]) -> None:
+    """TUN 'system'/'mixed' stacks accept connections on the TUN address; Windows Firewall blocks that
+    unless the core is allowed. Dismissing the first-run prompt even creates an explicit BLOCK rule,
+    which beats any allow rule, so remove every rule for the program first."""
+    if not IS_WIN:
+        return
+    for exe in exe_paths:
+        if not exe or not os.path.isfile(exe):
+            continue
+        subprocess.run(["netsh", "advfirewall", "firewall", "delete", "rule", "name=all", f"program={exe}"],
+                       capture_output=True, creationflags=NO_WINDOW)
+        for direction in ("in", "out"):
+            subprocess.run(["netsh", "advfirewall", "firewall", "add", "rule",
+                            f"name=NexusVPN Pro ({os.path.basename(exe)})", f"dir={direction}", "action=allow",
+                            f"program={exe}", "enable=yes", "profile=any"],
+                           capture_output=True, creationflags=NO_WINDOW)
+
+
 # ------------------------------------------------------------------ autostart
 def set_autostart(enabled: bool) -> tuple[bool, str]:
     """Scheduled task with highest privileges: starts elevated at logon without a UAC prompt."""

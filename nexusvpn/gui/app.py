@@ -18,10 +18,10 @@ from .. import paths, winutil
 from ..engine import Engine, Service, kill_stale, setup_logging
 from ..settings import Settings
 from ..subscription import NodeStore
-from .common import COLORS, STATE_TEXT, THEME, Bridge, run_bg, status_icon
+from .common import COLORS, STATE_TEXT, THEME, Bridge, apply_dark_theme, run_bg, status_icon
 from .pages import MODES, HomePage, ServersPage
 from .pages2 import (AboutPage, ConnectionsPage, CoresPage, CustomRoutingPage, LogsPage, SettingsPage,
-                     SmartPage)
+                     SmartPage, UninstallPage)
 
 log = logging.getLogger("app")
 INSTANCE_KEY = "NexusVPN-Pro-single-instance"
@@ -95,6 +95,7 @@ class NexusApp:
         self.service = Service(self.settings, self.store, self.engine, self.bridge.emit_event)
         atexit.register(self._emergency_cleanup)
 
+        apply_dark_theme(qapp)
         qapp.setStyleSheet(THEME)
         self.win = MainWindow(self)
         self.home = HomePage(self)
@@ -106,22 +107,32 @@ class NexusApp:
         self.settings_page = SettingsPage(self)
         self.logs = LogsPage(self, self.ring)
         self.about = AboutPage(self)
+        self.uninstall_page = UninstallPage(self)
         self.page_index = {}
         for key, title, page in (("home", "  Главная", self.home), ("servers", "  Серверы", self.servers),
                                  ("custom", "  Своя маршрутизация", self.custom),
                                  ("smart", "  Умная маршрутизация", self.smart),
-                                 ("conns", "  Соединения", self.conns), ("cores", "  Ядра и базы", self.cores),
+                                 ("conns", "  Соединения", self.conns), ("cores", "  Обновления", self.cores),
                                  ("settings", "  Настройки", self.settings_page), ("logs", "  Журнал", self.logs),
-                                 ("about", "  О программе", self.about)):
+                                 ("about", "  О программе", self.about),
+                                 ("uninstall", "  Удаление", self.uninstall_page)):
             self.page_index[key] = self.win.nav.count()
             self.win.add_page(title, page)
         self.win.nav.setCurrentRow(0)
         self._build_tray()
         self._traffic_stop = threading.Event()
         threading.Thread(target=self._traffic_loop, daemon=True, name="traffic").start()
+        threading.Thread(target=self._routes_loop, daemon=True, name="routes").start()
 
         if not (autostart and self.settings["start_minimized"]):
             self.win.show()
+        self._tray_target = ""
+        self.tray.messageClicked.connect(lambda: self._tray_target and self.open_page(self._tray_target))
+        self.update_info: dict = {}
+        self._after_update_notice()
+        if winutil.IS_WIN and self.settings["autostart"]:
+            # the program may have moved (zip folder -> Program Files): keep the logon task pointing here
+            run_bg(winutil.set_autostart, True)
         QTimer.singleShot(300, self._first_run)
 
     # ------------------------------------------------------------------ startup
@@ -157,6 +168,67 @@ class NexusApp:
                     shutil.copytree(item, target)
                 else:
                     shutil.copy2(item, target)
+
+    def notify(self, text: str, page: str = "", level=QSystemTrayIcon.Information, ms: int = 8000) -> None:
+        self._tray_target = page
+        self.tray.showMessage(paths.APP_NAME, text[:250], level, ms)
+        self.status(text)
+
+    def _after_update_notice(self) -> None:
+        from .. import updater
+        b = updater.current_build()
+        last = int(self.settings["last_run_build"] or 0)
+        if b and last and b > last:
+            QTimer.singleShot(2500, lambda: self.notify(f"NexusVPN Pro обновлён: {updater.current_version_text()}",
+                                                        "cores"))
+        if b != last:
+            self.settings["last_run_build"] = b
+            self.settings.save()
+
+    def install_app_update(self, info: dict, ask: bool = True) -> None:
+        from .. import updater
+        if ask and QMessageBox.question(
+                self.win, "Обновление", f"Установить {info['name']}?\n\nСкачается {info['size'] // 1048576} МБ, "
+                "программа закроется на несколько секунд и запустится снова. Настройки и подписки сохранятся.") \
+                != QMessageBox.Yes:
+            return
+        if not updater.is_installed_copy():
+            QMessageBox.information(self.win, "Обновление",
+                                    "Эта копия запущена из распакованной папки, а не установлена. Скачайте "
+                                    "установщик из раздела Releases на GitHub и запустите его — дальше "
+                                    "обновления будут ставиться сами.")
+            return
+        self.status("Скачивание обновления…")
+
+        def prog(got, total):
+            self.bridge.emit_event("update_progress", {"got": got, "total": total})
+
+        def done(setup):
+            self.status("Установка обновления…")
+            updater.run_installer(setup)
+            self.quit()
+        run_bg(updater.download, info, self.settings, self.engine.proxy_ports(), prog, done=done,
+               failed=lambda e: self.notify(f"Обновление не скачалось: {e}", "cores", QSystemTrayIcon.Warning))
+
+    def uninstall(self, purge: bool) -> None:
+        from .. import uninstall
+        self._quitting = True
+        self._traffic_stop.set()
+        self.service.stop()
+        self.engine.shutdown()
+        uninstall.restore_proxy()
+        uninstall.remove_system_entries()
+        unins = uninstall.uninstaller()
+        if unins:
+            import subprocess
+            args = [unins, "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART"] + ([] if purge else ["/KEEPDATA"])
+            subprocess.Popen(args, creationflags=0x00000008 if winutil.IS_WIN else 0)
+        else:
+            if purge:
+                uninstall.purge_data()
+            uninstall.delete_folder_after_exit(paths.BASE_DIR)
+        self.tray.hide()
+        self.qapp.quit()
 
     def _autoconnect(self) -> None:
         """Reconnect on launch if the VPN was on when the program last ran (survives reboots)."""
@@ -239,6 +311,29 @@ class NexusApp:
             self.home.ping = data["delay"]
         elif name == "traffic":
             self.home.set_traffic(data["up"], data["down"])
+        elif name == "routes":
+            self.home.set_routes(data)
+        elif name == "app_update":
+            self.update_info = data
+            self.home.show_update(data)
+            self.cores.show_app_info(data)
+            if data.get("notify"):
+                self.notify(f"Вышло обновление NexusVPN Pro: {data['name']}. Нажмите, чтобы открыть.", "cores")
+        elif name == "app_update_auto":
+            self.notify(f"Устанавливается обновление {data['name']}…", "cores")
+            self.install_app_update(data, ask=False)
+        elif name == "update_progress":
+            t = data["total"] or 1
+            self.status(f"Скачивание обновления: {data['got'] * 100 // t}% ({data['got'] // 1048576} МБ)")
+        elif name == "cores_available":
+            names = ", ".join(f"{k} {v}" for k, v in data["cores"].items())
+            self.home.show_cores_update(data["cores"])
+            self.notify(f"Доступны новые версии ядер: {names}. Откройте «Обновления».", "cores")
+        elif name == "cores_updated":
+            done = [m for m in data.get("messages", []) if "→" in m]
+            if done:
+                self.notify("Ядра обновлены: " + "; ".join(done), "cores")
+            self.home.show_cores_update({})
         elif name == "learned":
             self.status(f"Обнаружена блокировка: {data['domain']} → теперь через VPN ({data['reason']})")
             if self.smart.isVisible():
@@ -277,6 +372,21 @@ class NexusApp:
     def relaunch_admin(self) -> None:
         if winutil.relaunch_as_admin(["--after-elevate"]):
             self.quit()
+
+    def _routes_loop(self) -> None:
+        from ..route_stats import RouteStats
+        stats, started = RouteStats(), 0.0
+        while not self._traffic_stop.wait(2):
+            if self.engine.state != "running":
+                continue
+            if self.engine.started_at != started:
+                started = self.engine.started_at
+                stats.reset()
+            try:
+                snap = stats.update(self.engine.api().connections().get("connections") or [])
+            except (OSError, ValueError):
+                continue
+            self.bridge.emit_event("routes", snap)
 
     def _traffic_loop(self) -> None:
         while not self._traffic_stop.is_set():
@@ -322,6 +432,9 @@ def _another_instance_running() -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     argv = argv if argv is not None else sys.argv
+    if "--stop" in argv or "--cleanup" in argv:
+        from .. import uninstall
+        return uninstall.cli(argv)
     if winutil.IS_WIN:
         try:
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("NexusVPN.Pro")
@@ -339,7 +452,15 @@ def main(argv: list[str] | None = None) -> int:
     server = QLocalServer()
     server.listen(INSTANCE_KEY)
     app = NexusApp(qapp, autostart="--autostart" in argv)
-    server.newConnection.connect(lambda: (server.nextPendingConnection(), app.show_window()))
+
+    def on_connection():
+        conn = server.nextPendingConnection()
+        conn.waitForReadyRead(500)
+        if bytes(conn.readAll()) == b"quit":
+            app.quit()
+        else:
+            app.show_window()
+    server.newConnection.connect(on_connection)
     if not QSystemTrayIcon.isSystemTrayAvailable():
         QMessageBox.information(None, paths.APP_NAME, "Системный трей недоступен — окно будет всегда открыто.")
     return qapp.exec()

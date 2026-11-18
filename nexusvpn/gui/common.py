@@ -5,7 +5,7 @@ import traceback
 from typing import Callable
 
 from PySide6.QtCore import QObject, QPoint, QRunnable, Qt, QThreadPool, Signal
-from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap, QBrush, QPen
+from PySide6.QtGui import QColor, QIcon, QPainter, QPalette, QPixmap, QBrush, QPen
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QToolButton, QVBoxLayout, QWidget
 
 from .help_texts import HELP
@@ -139,9 +139,39 @@ def human_bytes(n: float) -> str:
     return f"{n:.1f} ПБ"
 
 
+def apply_dark_theme(qapp) -> None:
+    """Fusion + dark palette: dialogs, message boxes and the tray menu otherwise use the light Windows 11
+    style while our stylesheet makes their text light — white on white."""
+    qapp.setStyle("Fusion")
+    p = QPalette()
+    bg, base, alt, text, mid = QColor("#0f172a"), QColor("#0b1220"), QColor("#111827"), QColor("#e2e8f0"), \
+        QColor("#334155")
+    for role, color in ((QPalette.Window, bg), (QPalette.WindowText, text), (QPalette.Base, base),
+                        (QPalette.AlternateBase, alt), (QPalette.ToolTipBase, QColor("#1e293b")),
+                        (QPalette.ToolTipText, text), (QPalette.Text, text), (QPalette.Button, QColor("#1e293b")),
+                        (QPalette.ButtonText, text), (QPalette.BrightText, QColor("#ffffff")),
+                        (QPalette.Highlight, QColor("#0369a1")), (QPalette.HighlightedText, QColor("#ffffff")),
+                        (QPalette.Link, QColor("#38bdf8")), (QPalette.PlaceholderText, QColor("#64748b")),
+                        (QPalette.Mid, mid), (QPalette.Dark, base), (QPalette.Light, mid)):
+        p.setColor(role, color)
+    for role in (QPalette.WindowText, QPalette.Text, QPalette.ButtonText):
+        p.setColor(QPalette.Disabled, role, QColor("#64748b"))
+    qapp.setPalette(p)
+
+
 THEME = """
 * { font-family: "Segoe UI", "Inter", sans-serif; font-size: 10pt; }
-QMainWindow, QWidget#root { background: #0f172a; }
+QMainWindow, QWidget#root, QDialog, QMessageBox, QInputDialog { background: #0f172a; }
+QDialog QLabel, QMessageBox QLabel { color: #e2e8f0; }
+QMenu { background: #111827; color: #e2e8f0; border: 1px solid #334155; padding: 4px; }
+QMenu::item { padding: 6px 22px; border-radius: 5px; }
+QMenu::item:selected { background: #0369a1; color: white; }
+QMenu::item:disabled { color: #64748b; }
+QMenu::separator { height: 1px; background: #334155; margin: 4px 8px; }
+QCheckBox { color: #e2e8f0; spacing: 8px; }
+QCheckBox::indicator { border: 1px solid #64748b; border-radius: 3px; background: #0b1220; }
+QCheckBox::indicator:checked { background: #0284c7; border-color: #38bdf8; }
+QGroupBox::indicator { width: 14px; height: 14px; }
 QWidget { color: #e2e8f0; }
 QListWidget#nav { background: #0b1220; border: none; padding-top: 12px; outline: 0; }
 QListWidget#nav::item { padding: 11px 18px; border-radius: 8px; margin: 2px 8px; }
@@ -171,6 +201,7 @@ QTabBar::tab { background: #111827; padding: 7px 16px; border-top-left-radius: 7
             margin-right: 2px; color: #94a3b8; }
 QTabBar::tab:selected { background: #1e293b; color: #e2e8f0; }
 QCheckBox::indicator { width: 16px; height: 16px; }
+QPushButton { min-height: 22px; }
 QLabel#h1 { font-size: 17pt; font-weight: 700; }
 QLabel#muted { color: #94a3b8; }
 QLabel#card { background: #111827; border: 1px solid #1e293b; border-radius: 10px; padding: 12px; }
@@ -187,4 +218,6 @@ QPushButton#mode { font-size: 11pt; font-weight: 600; padding: 14px 10px; border
 QPushButton#mode:checked { background: #0c4a6e; border-color: #38bdf8; color: white; }
 QPushButton#mode:hover:!checked { border-color: #64748b; }
 QLabel#brand { font-size: 19pt; font-weight: 800; color: #38bdf8; }
+QWidget#banner { background: #064e3b; border: 1px solid #10b981; border-radius: 10px; }
+QWidget#banner QLabel { color: #d1fae5; }
 """

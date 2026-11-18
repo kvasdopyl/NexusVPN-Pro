@@ -197,6 +197,8 @@ class Engine:
             raise RuntimeError("Режим TUN требует прав администратора. Перезапустите программу от имени "
                                "администратора или выберите режим «Системный прокси».")
         kill_stale()
+        if self.s["capture_mode"] in ("tun", "both"):
+            winutil.allow_in_firewall([str(paths.core_path(n)) for n in ("sing-box", "xray", "mihomo")])
         ifaces, exclude = self._start_tunnels()
         _, xr, mh = config_builder.write_configs(self.s, self.store.nodes, ifaces=ifaces, exclude_ips=exclude)
         chk = subprocess.run([str(sb_exe), "check", "-c", str(paths.SINGBOX_CONFIG)], capture_output=True,
@@ -217,7 +219,7 @@ class Engine:
         if mh:
             mh_exe = paths.core_path("mihomo")
             if not mh_exe.exists():
-                raise RuntimeError("Для AmneziaWG нужно ядро mihomo. Откройте «Ядра и базы» → «Обновить всё».")
+                raise RuntimeError("Для AmneziaWG нужно ядро mihomo. Откройте «Обновления» → «Обновить всё».")
             self.mihomo = CoreProcess("mihomo", [str(mh_exe), "-d", str(paths.RUN_DIR), "-f",
                                                  str(paths.MIHOMO_CONFIG)], mb)
             self.mihomo.start()
@@ -350,7 +352,8 @@ class Engine:
                 if paths.APP_SHORT in name or name.startswith(("tun", "NexusVPN IKEv2")):
                     continue
                 for a in addrs:
-                    if a.family.name in ("AF_INET", "AF_INET6") and not a.address.startswith(("127.", "::1", "fe80")):
+                    # IPv4 only: Windows rotates temporary IPv6 addresses, which is not a network change
+                    if a.family.name == "AF_INET" and not a.address.startswith(("127.", "169.254.")):
                         out.add((name, a.address))
             return frozenset(out)
         except (OSError, AttributeError):
@@ -474,7 +477,7 @@ class Service:
 
     def _loop(self) -> None:
         self._stop.wait(20)
-        last_core_check = 0.0
+        last_core_check = last_app_check = 0.0
         while not self._stop.is_set():
             try:
                 if self._pending_reload and not self.engine.voice_active():
@@ -483,9 +486,17 @@ class Service:
                 self.update_subscriptions(only_due=True)
                 if self.s["rules_auto_update"] and cores.rules_age_days() > 1:
                     self.update_rules()
-                if self.s["core_auto_update"] and time.time() - last_core_check > 86400:
+                if time.time() - last_core_check > 86400:
                     last_core_check = time.time()
-                    self.update_cores(only_if_idle=True)
+                    if self.s["core_auto_update"]:
+                        self.update_cores(only_if_idle=True)
+                    else:
+                        avail = {n: i["latest"] for n, i in self.check_cores().items() if i["update"]}
+                        if avail:
+                            self.emit("cores_available", {"cores": avail})
+                if self.s["app_update_check"] and time.time() - last_app_check > 6 * 3600:
+                    last_app_check = time.time()
+                    self.check_app_update(background=True)
             except Exception:  # noqa: BLE001
                 log.exception("service loop")
             self._stop.wait(600)
@@ -547,6 +558,28 @@ class Service:
                 else:
                     self.engine.reload()
         return res
+
+    def check_app_update(self, background: bool = False) -> dict:
+        """-> release info + 'newer'. Background checks notify once per build and may auto-install."""
+        from . import updater
+        try:
+            info = updater.latest(self.s, self.engine.proxy_ports())
+        except updater.UpdateError as e:
+            if background:
+                log.info("app update check: %s", e)
+                return {}
+            raise
+        info["newer"] = updater.is_newer(info)
+        if info["newer"] and background:
+            if self.s["app_update_auto"] and not self.engine.voice_active():
+                self.emit("app_update_auto", info)
+            else:
+                info["notify"] = info["build"] != int(self.s["update_notified_build"])
+                if info["notify"]:
+                    self.s["update_notified_build"] = info["build"]
+                    self.s.save()
+                self.emit("app_update", info)
+        return info
 
     def check_cores(self) -> dict[str, dict]:
         out = {}

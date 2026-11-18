@@ -7,7 +7,7 @@ from datetime import datetime
 
 import psutil
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGroupBox,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGridLayout, QGroupBox,
                                QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
                                QPushButton, QScrollArea, QSpinBox, QTabWidget, QVBoxLayout, QWidget)
 
@@ -93,12 +93,14 @@ class CustomRoutingPage(QWidget):
             cols.addWidget(g, 1)
         v.addLayout(cols, 1)
 
-        qa = QHBoxLayout()
-        qa.addWidget(QLabel("Быстро добавить в «Через VPN»:"))
-        qa.addWidget(HelpButton("quick_add"))
-        for name in QUICK:
-            qa.addWidget(btn(name, lambda _=False, nn=name: self.quick_add(nn)))
-        qa.addStretch()
+        qa_head = QHBoxLayout()
+        qa_head.addWidget(QLabel("Быстро добавить в «Через VPN»:"))
+        qa_head.addWidget(HelpButton("quick_add"))
+        qa_head.addStretch()
+        v.addLayout(qa_head)
+        qa = QGridLayout()
+        for i, name in enumerate(QUICK):
+            qa.addWidget(btn(name, lambda _=False, nn=name: self.quick_add(nn)), i // 5, i % 5)
         v.addLayout(qa)
 
         bottom = QHBoxLayout()
@@ -455,8 +457,45 @@ class CoresPage(QWidget):
         super().__init__()
         self.app = app
         v = QVBoxLayout(self)
-        v.addWidget(page_title("Ядра и базы", "Обновление всех ядер одной кнопкой. Новое ядро проверяется перед "
-                                              "заменой; если не запустится — автоматический откат.", "cores"))
+        v.addWidget(page_title("Обновления", "Программа обновляется из вашего репозитория GitHub, ядра — с "
+                                             "официальных страниц. О новых версиях программа сообщает сама.",
+                               "updates"))
+        ag = QGroupBox("Программа NexusVPN Pro")
+        af = QFormLayout(ag)
+        self.app_cur = QLabel()
+        self.app_latest = QLabel("—")
+        self.app_latest.setWordWrap(True)
+        self.app_latest.setTextFormat(Qt.RichText)
+        af.addRow("Установлена:", self.app_cur)
+        af.addRow("На GitHub:", self.app_latest)
+        ar = QHBoxLayout()
+        ar.addWidget(btn("Проверить обновление программы", self.check_app))
+        self.app_install_btn = btn("Установить обновление", self.install_app, "primary")
+        self.app_install_btn.setEnabled(False)
+        ar.addWidget(self.app_install_btn)
+        ar.addStretch()
+        af.addRow(ar)
+        s = app.settings
+        self.app_check = QCheckBox("Проверять обновления программы автоматически (каждые 6 часов)")
+        self.app_check.setChecked(bool(s["app_update_check"]))
+        self.app_check.toggled.connect(lambda x: (s.set("app_update_check", x), s.save()))
+        af.addRow(with_help(self.app_check, "app_update_check"))
+        self.app_auto = QCheckBox("Устанавливать обновления программы без вопросов (не во время звонка)")
+        self.app_auto.setChecked(bool(s["app_update_auto"]))
+        self.app_auto.toggled.connect(lambda x: (s.set("app_update_auto", x), s.save()))
+        af.addRow(with_help(self.app_auto, "app_update_auto"))
+        self.repo = QLineEdit(s["update_repo"])
+        from .. import build_info
+        self.repo.setPlaceholderText(build_info.REPO)
+        self.token = QLineEdit(s["update_token"])
+        self.token.setEchoMode(QLineEdit.Password)
+        self.token.setPlaceholderText("нужен только для приватного репозитория")
+        for w, key in ((self.repo, "update_repo"), (self.token, "update_token")):
+            w.editingFinished.connect(lambda ww=w, kk=key: (s.set(kk, ww.text().strip()), s.save()))
+        af.addRow("Репозиторий:", with_help(self.repo, "update_repo", True))
+        af.addRow("Токен GitHub:", with_help(self.token, "update_token", True))
+        v.addWidget(ag)
+        v.addWidget(QLabel("<b>Ядра</b>"))
         self.tbl = table(["Компонент", "Назначение", "Установлено", "Последняя", "Статус"], 1)
         self.tbl.setSortingEnabled(False)
         self.tbl.setMaximumHeight(190)
@@ -489,12 +528,48 @@ class CoresPage(QWidget):
         v.addWidget(with_help(self.auto, SETTINGS_HELP["core_auto_update"]))
         v.addStretch()
         self.info: dict = {}
+        self.app_info: dict = {}
         self.render_local()
+
+    def show_app_info(self, info: dict) -> None:
+        from .. import updater
+        self.app_info = info
+        self.app_cur.setText(updater.current_version_text())
+        if not info:
+            return
+        when = info.get("published", "")[:10]
+        if info.get("newer"):
+            notes = info.get("notes", "").replace("\n", "<br>")[:600]
+            self.app_latest.setText(f"<b style='color:#4ade80'>{info['name']}</b> от {when} — доступно обновление"
+                                    + (f"<br><span style='color:#94a3b8'>{notes}</span>" if notes else ""))
+        else:
+            self.app_latest.setText(f"{info['name']} от {when} — у вас последняя версия")
+        self.app_install_btn.setEnabled(bool(info.get("newer")))
+
+    def check_app(self) -> None:
+        self.app.status("Проверка обновлений программы…")
+
+        def done(info):
+            self.app.update_info = info
+            self.show_app_info(info)
+            self.app.home.show_update(info)
+            self.app.status("Доступна новая версия" if info.get("newer") else "У вас последняя версия программы")
+
+        def failed(e):
+            self.app_latest.setText(f"<span style='color:#fca5a5'>{e}</span>")
+            self.app.status(f"Проверка обновлений: {e}")
+        run_bg(self.app.service.check_app_update, done=done, failed=failed)
+
+    def install_app(self) -> None:
+        if self.app_info.get("newer"):
+            self.app.install_app_update(self.app_info)
 
     PURPOSE = {"sing-box": "основное: TUN, правила, VLESS/VMess/Trojan/SS/Hy2/TUIC/WireGuard",
                "xray": "VLESS XHTTP", "mihomo": "AmneziaWG 1.0–3.1"}
 
     def render_local(self) -> None:
+        from .. import updater
+        self.app_cur.setText(updater.current_version_text())
         self.tbl.setRowCount(len(cores.SPECS))
         for i, name in enumerate(cores.SPECS):
             inf = self.info.get(name, {})
@@ -547,7 +622,7 @@ class CoresPage(QWidget):
 class SettingsPage(QWidget):
     FIELDS = [
         ("Подключение", [
-            ("tun_stack", "Стек TUN", ["mixed", "system", "gvisor"]),
+            ("tun_stack", "Стек TUN", ["gvisor", "mixed", "system"]),
             ("tun_mtu", "MTU", (1200, 9000)),
             ("strict_route", "Строгая маршрутизация (без утечек)", bool),
             ("endpoint_independent_nat", "Endpoint-independent NAT (Discord, игры, P2P)", bool),
@@ -780,3 +855,42 @@ class AboutPage(QWidget):
         v.addWidget(dl)
         v.addWidget(QPushButton("Открыть папку данных", clicked=lambda: _open_path(paths.DATA_DIR)))
         v.addStretch()
+
+
+# ======================================================================= Uninstall
+class UninstallPage(QWidget):
+    def __init__(self, app):
+        super().__init__()
+        self.app = app
+        from .. import uninstall
+        v = QVBoxLayout(self)
+        v.addWidget(page_title("Удаление программы", "Полностью убирает NexusVPN Pro с компьютера.", "uninstall"))
+        installed = uninstall.is_installed()
+        what = QLabel(
+            "<b>Будет удалено:</b><ul>"
+            "<li>программа и все её файлы" + (" (через стандартный деинсталлятор Windows)" if installed
+                                                 else f" — папка {paths.BASE_DIR}") + "</li>"
+            "<li>ярлыки на рабочем столе и в меню «Пуск», запись в «Установленных приложениях»</li>"
+            "<li>автозапуск (задание Планировщика), правила Брандмауэра Windows</li>"
+            "<li>подключения IKEv2, созданные программой; настройки системного прокси возвращаются как были</li>"
+            "<li>ядра, базы правил, журналы</li></ul>"
+            "OpenVPN, если вы его ставили, — отдельная программа: удаляется через «Установленные приложения».")
+        what.setWordWrap(True)
+        what.setTextFormat(Qt.RichText)
+        v.addWidget(what)
+        self.purge = QCheckBox("Удалить также настройки, подписки, серверы и изученные правила")
+        self.purge.setChecked(True)
+        v.addWidget(with_help(self.purge, "uninstall_purge"))
+        row = QHBoxLayout()
+        row.addWidget(btn("Удалить NexusVPN Pro", self.run, "danger"))
+        row.addStretch()
+        v.addLayout(row)
+        v.addStretch()
+
+    def run(self) -> None:
+        extra = "\n\nНастройки и подписки тоже будут удалены." if self.purge.isChecked() else \
+            "\n\nНастройки и подписки останутся — пригодятся при повторной установке."
+        if QMessageBox.question(self, "Удаление", "Удалить NexusVPN Pro с этого компьютера?" + extra,
+                                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        self.app.uninstall(self.purge.isChecked())

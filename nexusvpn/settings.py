@@ -11,7 +11,7 @@ from .paths import SETTINGS_FILE, ensure_dirs
 DEFAULTS: dict[str, Any] = {
     # ---- engine / capture ----
     "capture_mode": "tun",            # tun | system_proxy | both
-    "tun_stack": "mixed",             # mixed | gvisor | system
+    "tun_stack": "gvisor",            # gvisor | mixed | system; gvisor needs no firewall rule on Windows
     "tun_mtu": 1400,                  # <=1400 avoids fragmentation on most LTE/DSL paths
     "tun_ipv4": "172.19.0.1/30",
     "strict_route": True,             # blocks leaks via other interfaces
@@ -65,6 +65,12 @@ DEFAULTS: dict[str, Any] = {
 
     # ---- quality of life ----
     "core_auto_update": True,
+    "app_update_check": True,         # look for new NexusVPN Pro builds on GitHub every 6 h
+    "app_update_auto": False,         # install them without asking (not during a call)
+    "update_repo": "",                # empty = the repository this build came from
+    "update_token": "",               # only for a private repository
+    "update_notified_build": 0,
+    "last_run_build": 0,
     "rules_auto_update": True,
     "start_minimized": False,
     "openvpn_exe": "",                # empty = auto-detect C:\\Program Files\\OpenVPN\\bin\\openvpn.exe
@@ -98,6 +104,11 @@ class Settings:
             self.data.update(raw)
             if self.data.get("routing_mode") in ("rules", "direct"):
                 self.data["routing_mode"] = "custom"
+            # 2.0.0 shipped "mixed": its system TCP stack is silently blocked by Windows Firewall
+            if not self.data.get("migrated_stack_v201"):
+                if self.data.get("tun_stack") == "mixed":
+                    self.data["tun_stack"] = "gvisor"
+                self.data["migrated_stack_v201"] = True
             # forward-compatible: add new default keys
             for k, v in DEFAULTS.items():
                 self.data.setdefault(k, copy.deepcopy(v))

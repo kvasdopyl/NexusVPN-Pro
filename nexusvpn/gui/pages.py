@@ -40,6 +40,21 @@ class HomePage(QWidget):
         sub.setObjectName("muted")
         sub.setWordWrap(True)
         v.addWidget(sub)
+        self.banner = QWidget()
+        self.banner.setObjectName("banner")
+        bl = QHBoxLayout(self.banner)
+        bl.setContentsMargins(12, 8, 8, 8)
+        self.banner_lbl = QLabel()
+        self.banner_lbl.setWordWrap(True)
+        bl.addWidget(self.banner_lbl, 1)
+        self.banner_btn = QPushButton("Обновить")
+        self.banner_btn.setObjectName("primary")
+        self.banner_btn.clicked.connect(self._banner_clicked)
+        bl.addWidget(self.banner_btn)
+        self.banner.hide()
+        v.addWidget(self.banner)
+        self._app_update: dict = {}
+        self._cores_update: dict = {}
 
         top = QHBoxLayout()
         self.connect_btn = QPushButton("ВКЛ")
@@ -102,7 +117,13 @@ class HomePage(QWidget):
             c.setObjectName("card")
             c.setMinimumHeight(66)
             cards.addWidget(c, i // 2, i % 2)
+        self.c_routes = QLabel()
+        self.c_routes.setObjectName("card")
+        self.c_routes.setWordWrap(True)
+        self.c_routes.setMinimumHeight(66)
+        cards.addWidget(self.c_routes, 2, 0, 1, 2)
         v.addLayout(cards)
+        self.routes: dict = {}
         v.addWidget(with_help(QLabel(""), "cards"))
         v.addStretch()
         self.up = self.down = 0
@@ -169,8 +190,35 @@ class HomePage(QWidget):
     def _node_changed(self) -> None:
         run_bg(self.app.engine.select_node, self.node.currentData() or "")
 
+    def show_update(self, info: dict) -> None:
+        self._app_update = info if info.get("newer") else {}
+        self._render_banner()
+
+    def show_cores_update(self, cores: dict) -> None:
+        self._cores_update = cores
+        self._render_banner()
+
+    def _render_banner(self) -> None:
+        parts = []
+        if self._app_update:
+            parts.append(f"Вышла новая версия программы: <b>{self._app_update['name']}</b>")
+        if self._cores_update:
+            parts.append("Новые версии ядер: " + ", ".join(f"{k} {v}" for k, v in self._cores_update.items()))
+        self.banner_lbl.setText("<br>".join(parts))
+        self.banner_btn.setText("Обновить программу" if self._app_update else "Открыть «Обновления»")
+        self.banner.setVisible(bool(parts))
+
+    def _banner_clicked(self) -> None:
+        if self._app_update:
+            self.app.install_app_update(self._app_update)
+        else:
+            self.app.open_page("cores")
+
     def set_traffic(self, up: int, down: int) -> None:
         self.up, self.down = up, down
+
+    def set_routes(self, snap: dict) -> None:
+        self.routes = snap
 
     def refresh(self) -> None:
         eng = self.app.engine
@@ -187,12 +235,23 @@ class HomePage(QWidget):
         mode = {k: t for k, t, _ in MODES}.get(self.app.settings["routing_mode"], "")
         cap = dict(CAPTURE).get(self.app.settings["capture_mode"], "")
         self.detail_lbl.setText(f"{mode} · {cap}")
-        self.c_speed.setText(f"<b>Скорость</b><br>↑ {human_bytes(self.up)}/с &nbsp;&nbsp; ↓ {human_bytes(self.down)}/с")
         ping = "—" if self.ping is None else ("нет связи" if self.ping < 0 else f"{self.ping} мс")
         self.c_ping.setText(f"<b>Задержка через VPN</b><br>{ping}")
-        st_l = eng.learner.stats
-        self.c_learn.setText(f"<b>Умная маршрутизация</b><br>проверок: {st_l['probes']} · "
-                             f"в VPN: {st_l['learned_proxy']} · напрямую: {st_l['learned_direct']}")
+        r = self.routes if st == "running" else {}
+        self.c_speed.setText(
+            f"<b>Скорость</b> &nbsp;↑ {human_bytes(self.up)}/с &nbsp; ↓ {human_bytes(self.down)}/с<br>"
+            f"<span style='color:#38bdf8'>через VPN: {human_bytes(r.get('vpn_bytes', 0))}</span> &nbsp;·&nbsp; "
+            f"<span style='color:#4ade80'>напрямую: {human_bytes(r.get('direct_bytes', 0))}</span>")
+        db = eng.learner.db
+        self.c_learn.setText(f"<b>Изучено умной маршрутизацией</b><br>в VPN: {len(db.values('domain', 'proxy', 'auto'))}"
+                             f" · напрямую: {len(db.values('domain', 'direct', 'auto'))}"
+                             f" · проверок за сеанс: {eng.learner.stats['probes']}")
+        now = r.get("vpn_now") or []
+        top = ", ".join(f"{name} ({human_bytes(b)})" for name, b in r.get("top_vpn", []))
+        self.c_routes.setText(
+            f"<b>Сейчас через VPN</b>: {r.get('vpn_conns', 0)} соединений · напрямую: {r.get('direct_conns', 0)}<br>"
+            f"<span style='color:#38bdf8'>{', '.join(now[:12]) + (' …' if len(now) > 12 else '') or '—'}</span>"
+            + (f"<br><span style='color:#94a3b8'>Больше всего трафика через VPN: {top}</span>" if top else ""))
         up = int(time.time() - eng.started_at) if st == "running" and eng.started_at else 0
         self.c_uptime.setText(f"<b>Время работы</b><br>{up // 86400}д {up % 86400 // 3600:02d}:"
                               f"{up % 3600 // 60:02d}:{up % 60:02d}")
@@ -430,14 +489,17 @@ class ServersPage(QWidget):
         r2 = QHBoxLayout()
         r2.addWidget(btn("+ Добавить сервер", self.add_node, "primary"))
         r2.addWidget(btn("Изменить", self.edit_node))
-        r2.addWidget(btn("Копировать ссылку", self.copy_link))
         r2.addWidget(btn("Удалить", self.del_nodes))
         r2.addWidget(btn("Импорт файла…", self.import_file,
                          tip="WireGuard/AmneziaWG .conf, OpenVPN .ovpn, Clash .yaml, sing-box .json, .txt"))
         r2.addStretch()
-        r2.addWidget(btn("Проверить задержку", self.test_delays))
-        r2.addWidget(btn("Использовать", self.use_selected))
         g2v.addLayout(r2)
+        r3 = QHBoxLayout()
+        r3.addWidget(btn("Проверить задержку", self.test_delays))
+        r3.addWidget(btn("Использовать выбранный", self.use_selected))
+        r3.addWidget(btn("Копировать ссылку", self.copy_link))
+        r3.addStretch()
+        g2v.addLayout(r3)
         v.addWidget(g2, 1)
         self.reload()
 
@@ -634,6 +696,10 @@ class ServersPage(QWidget):
             for n in self.app.store.enabled():
                 if n.tag not in res:
                     res[n.tag] = api.delay(n.tag, url, 6000)
+            # WireGuard/AmneziaWG/OpenVPN spend the first probe on the handshake: retry failures once
+            for tag, d in list(res.items()):
+                if not (isinstance(d, int) and d > 0):
+                    res[tag] = api.delay(tag, url, 8000)
             return res
 
         def done(res):

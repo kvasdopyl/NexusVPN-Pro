@@ -190,7 +190,7 @@ class OpenVPNTunnel(BaseTunnel):
     def _start(self, timeout: float) -> str:
         exe = openvpn_exe(self.s)
         if not exe:
-            raise TunnelError("OpenVPN не установлен. «Ядра и базы» → «Установить OpenVPN».")
+            raise TunnelError("OpenVPN не установлен. «Обновления» → «Установить OpenVPN».")
         n = self.node
         self.server_ips = resolve_ips(n.server)
         d = paths.OVPN_DIR
