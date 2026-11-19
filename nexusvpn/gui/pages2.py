@@ -5,216 +5,23 @@ import os
 import subprocess
 from datetime import datetime
 
-import psutil
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGridLayout, QGroupBox,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFormLayout, QGroupBox,
                                QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
                                QPushButton, QScrollArea, QSpinBox, QTabWidget, QVBoxLayout, QWidget)
 
 from .. import cores, paths, tunnels, winutil
 from ..learner import base_domain
-from ..presets import DISCORD_DOMAINS, PRESET_TITLES, TELEGRAM_CIDRS
-from ..rules_text import KINDS_HELP, parse_text, to_text
+from ..presets import PRESET_TITLES
 from .common import HelpButton, human_bytes, run_bg, with_help
 from .help_texts import SETTINGS_HELP
-from .widgets import btn, group_header, page_title, selected_data, set_row, table
-
-QUICK = {
-    "Discord": DISCORD_DOMAINS + ["Discord.exe", "DiscordPTB.exe", "DiscordCanary.exe", "Update.exe"],
-    "YouTube": ["youtube.com", "googlevideo.com", "ytimg.com", "youtu.be", "ggpht.com", "youtube-nocookie.com",
-                "youtubei.googleapis.com"],
-    "Telegram": ["telegram.org", "t.me", "telegram.me", "telesco.pe", "tdesktop.com", "Telegram.exe",
-                 *TELEGRAM_CIDRS],
-    "ChatGPT": ["openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com", "sora.com"],
-    "Claude": ["anthropic.com", "claude.ai", "claude.com", "claudeusercontent.com"],
-    "Gemini": ["gemini.google.com", "aistudio.google.com", "generativelanguage.googleapis.com"],
-    "Instagram/Facebook": ["instagram.com", "cdninstagram.com", "facebook.com", "fbcdn.net", "fb.com",
-                           "messenger.com"],
-    "X / Twitter": ["x.com", "twitter.com", "twimg.com", "t.co"],
-    "WhatsApp": ["whatsapp.com", "whatsapp.net", "wa.me"],
-}
-
+from .widgets import btn, page_title, selected_data, set_row, table
 
 def _open_path(p) -> None:
     if os.name == "nt":
         os.startfile(str(p))  # noqa: S606 - our own data folder
     else:
         subprocess.Popen(["xdg-open", str(p)])
-
-
-# ======================================================================= Custom routing
-class CustomRoutingPage(QWidget):
-    """Batch editor for the user's own lists. Lists apply in every mode; in «Своя маршрутизация»
-    they are the only thing that decides."""
-
-    def __init__(self, app):
-        super().__init__()
-        self.app = app
-        v = QVBoxLayout(self)
-        v.addWidget(page_title("Своя маршрутизация",
-                               "Впишите домены, IP, подсети и программы — по одному на строку или сразу пачкой. "
-                               "Нажмите «Сохранить и применить»: VPN не перезапускается, звонки не обрываются.",
-                               "mode_custom"))
-        hint = QLabel(KINDS_HELP.replace("\n", "<br>").replace("  ", "&nbsp;&nbsp;"))
-        hint.setObjectName("muted")
-        hint.setStyleSheet("font-family: Consolas, monospace; font-size: 9pt;")
-        hint_box = QGroupBox("Формат строк")
-        hb = QVBoxLayout(hint_box)
-        hb.addWidget(hint)
-        hint_box.setCheckable(True)
-        hint_box.setChecked(False)
-        hint.setVisible(False)
-        hint_box.toggled.connect(hint.setVisible)
-        v.addWidget(hint_box)
-
-        cols = QHBoxLayout()
-        self.editors: dict[str, QPlainTextEdit] = {}
-        self.counts: dict[str, QLabel] = {}
-        for verdict, title, key in (("proxy", "Через VPN", "custom_vpn"), ("direct", "Напрямую", "custom_direct")):
-            g = QGroupBox()
-            gv = QVBoxLayout(g)
-            gv.addWidget(group_header(title, key))
-            ed = QPlainTextEdit()
-            ed.setStyleSheet("font-family: Consolas, monospace;")
-            ed.setPlaceholderText("youtube.com\n*.discord.gg\n91.108.4.0/22\n1.2.3.4\nTelegram.exe")
-            gv.addWidget(ed, 1)
-            cnt = QLabel()
-            cnt.setObjectName("muted")
-            gv.addWidget(cnt)
-            r = QHBoxLayout()
-            r.addWidget(btn("Импорт из файла…", lambda _=False, vv=verdict: self.import_file(vv)))
-            r.addWidget(btn("Экспорт…", lambda _=False, vv=verdict: self.export_file(vv)))
-            r.addWidget(btn("Очистить", lambda _=False, e=ed: e.clear()))
-            r.addStretch()
-            gv.addLayout(r)
-            ed.textChanged.connect(lambda vv=verdict: self._count(vv))
-            self.editors[verdict] = ed
-            self.counts[verdict] = cnt
-            cols.addWidget(g, 1)
-        v.addLayout(cols, 1)
-
-        pick = QHBoxLayout()
-        pick.addWidget(btn("Выбрать из запущенных программ…", self.pick_programs, "primary"))
-        pick.addWidget(btn("Выбрать из открытых сайтов…", self.pick_sites))
-        pick.addWidget(HelpButton("pickers"))
-        pick.addStretch()
-        v.addLayout(pick)
-
-        qa_head = QHBoxLayout()
-        qa_head.addWidget(QLabel("Быстро добавить в «Через VPN»:"))
-        qa_head.addWidget(HelpButton("quick_add"))
-        qa_head.addStretch()
-        v.addLayout(qa_head)
-        qa = QGridLayout()
-        for i, name in enumerate(QUICK):
-            qa.addWidget(btn(name, lambda _=False, nn=name: self.quick_add(nn)), i // 5, i % 5)
-        v.addLayout(qa)
-
-        bottom = QHBoxLayout()
-        self.use_presets = QCheckBox("В режиме «Своя маршрутизация» также использовать готовые базы")
-        self.use_presets.setChecked(bool(app.settings["custom_use_presets"]))
-        bottom.addWidget(with_help(self.use_presets, "custom_presets"))
-        bottom.addStretch()
-        bottom.addWidget(btn("Отменить изменения", self.load))
-        bottom.addWidget(btn("Сохранить и применить", self.save, "primary"))
-        v.addLayout(bottom)
-        self.load()
-
-    @property
-    def learner(self):
-        return self.app.engine.learner
-
-    def _count(self, verdict: str) -> None:
-        entries, errors = parse_text(self.editors[verdict].toPlainText())
-        txt = f"Записей: {len(entries)}"
-        if errors:
-            txt += f" · <span style='color:#fca5a5'>ошибок: {len(errors)}</span>"
-        self.counts[verdict].setText(txt)
-
-    def load(self) -> None:
-        for verdict, ed in self.editors.items():
-            ed.setPlainText(to_text(self.learner.db.user_entries(verdict)))
-        self.use_presets.setChecked(bool(self.app.settings["custom_use_presets"]))
-
-    def save(self) -> None:
-        parsed = {}
-        all_errors = []
-        for verdict, ed in self.editors.items():
-            entries, errors = parse_text(ed.toPlainText())
-            parsed[verdict] = entries
-            all_errors += [f"{'VPN' if verdict == 'proxy' else 'Напрямую'}: {e}" for e in errors]
-        both = set(parsed["proxy"]) & set(parsed["direct"])
-        if both:
-            QMessageBox.warning(self, "Конфликт", "Эти записи есть в обоих списках — оставьте в одном:\n" +
-                                "\n".join(v for _, v in list(both)[:15]))
-            return
-        if all_errors and QMessageBox.question(
-                self, "Есть ошибки", "Некоторые строки не распознаны и будут пропущены:\n\n" +
-                "\n".join(all_errors[:15]) + ("\n…" if len(all_errors) > 15 else "") +
-                "\n\nСохранить остальное?") != QMessageBox.Yes:
-            return
-        for verdict, entries in parsed.items():
-            self.learner.db.replace_user(verdict, entries)
-        self.learner.apply()
-        presets_changed = self.use_presets.isChecked() != bool(self.app.settings["custom_use_presets"])
-        self.app.settings["custom_use_presets"] = self.use_presets.isChecked()
-        self.app.settings.save()
-        self.load()
-        if presets_changed:
-            run_bg(self.app.engine.reload)
-        self.app.status(f"Сохранено: через VPN — {len(parsed['proxy'])}, напрямую — {len(parsed['direct'])}. "
-                        "Применено без перезапуска.")
-        self.app.smart.reload()
-
-    def add_entries(self, verdict: str, values: list[str]) -> None:
-        """Put values into one list, take them out of the other, save right away."""
-        other = "direct" if verdict == "proxy" else "proxy"
-        low = {x.lower() for x in values}
-        ed_o = self.editors[other]
-        ed_o.setPlainText("\n".join(ln for ln in ed_o.toPlainText().splitlines()
-                                    if ln.split("#", 1)[0].strip().lower() not in low))
-        ed = self.editors[verdict]
-        cur = ed.toPlainText().rstrip()
-        have = {ln.split("#", 1)[0].strip().lower() for ln in cur.splitlines()}
-        add = [x for x in values if x.lower() not in have]
-        if add:
-            ed.setPlainText((cur + "\n" if cur else "") + "\n".join(add))
-        self.save()
-        where = "через VPN" if verdict == "proxy" else "напрямую"
-        self.app.status(f"{', '.join(values[:4])}{' …' if len(values) > 4 else ''} — теперь {where}")
-
-    def pick_programs(self) -> None:
-        from .pages3 import ProcessPicker
-        ProcessPicker(self, lambda verdict, exes: self.add_entries(
-            verdict, sorted({os.path.basename(e.replace("\\", "/")) for e in exes}))).exec()
-
-    def pick_sites(self) -> None:
-        from .pages3 import SitePicker
-        if self.app.engine.state != "running":
-            QMessageBox.information(self, "Сайты", "Сначала включите VPN и откройте нужные сайты.")
-            return
-        SitePicker(self, self.app, self.add_entries).exec()
-
-    def quick_add(self, name: str) -> None:
-        ed = self.editors["proxy"]
-        cur = ed.toPlainText().rstrip()
-        have = {ln.strip().lower() for ln in cur.splitlines()}
-        add = [x for x in QUICK[name] if x.lower() not in have]
-        ed.setPlainText((cur + "\n" if cur else "") + f"# {name}\n" + "\n".join(add))
-
-    def import_file(self, verdict: str) -> None:
-        fn, _ = QFileDialog.getOpenFileName(self, "Импорт списка", "", "Текст (*.txt *.list *.lst *.csv);;Все (*)")
-        if fn:
-            with open(fn, encoding="utf-8", errors="replace") as fh:
-                ed = self.editors[verdict]
-                cur = ed.toPlainText().rstrip()
-                ed.setPlainText((cur + "\n" if cur else "") + fh.read())
-
-    def export_file(self, verdict: str) -> None:
-        fn, _ = QFileDialog.getSaveFileName(self, "Экспорт списка", f"nexusvpn-{verdict}.txt", "Текст (*.txt)")
-        if fn:
-            with open(fn, "w", encoding="utf-8") as fh:
-                fh.write(self.editors[verdict].toPlainText())
 
 
 # ======================================================================= Smart routing
@@ -245,28 +52,21 @@ class SmartPage(QWidget):
         self.rules = table(["Значение", "Тип", "Маршрут", "Источник", "Программа", "Причина", "Обновлено"], 0)
         wv.addWidget(self.rules, 1)
         br = QHBoxLayout()
-        br.addWidget(btn("→ Через VPN", lambda: self.set_selected("proxy")))
-        br.addWidget(btn("→ Напрямую", lambda: self.set_selected("direct")))
-        br.addWidget(btn("Удалить", self.delete_selected))
-        br.addWidget(btn("Проверить сайт…", self.test_site, "primary"))
+        self.sel_buttons = [btn("→ Через VPN", lambda: self.set_selected("proxy"), tip="Выбранное всегда через VPN"),
+                            btn("→ Напрямую", lambda: self.set_selected("direct"), tip="Выбранное всегда напрямую"),
+                            btn("Забыть", self.delete_selected, tip="Удалить выбранное — программа изучит заново")]
+        for b in self.sel_buttons:
+            br.addWidget(b)
+        self.rules.itemSelectionChanged.connect(
+            lambda: [b.setEnabled(bool(self.rules.selectedIndexes())) for b in self.sel_buttons])
+        for b in self.sel_buttons:
+            b.setEnabled(False)
+        br.addWidget(btn("Проверить сайт…", self.test_site, tip="Проверить, открывается ли сайт без VPN"))
         br.addStretch()
         br.addWidget(btn("Забыть всё автоматическое", self.clear_auto, "danger"))
         wv.addLayout(br)
         tabs.addTab(w, "Изученное")
 
-        a = QWidget()
-        av = QVBoxLayout(a)
-        av.addWidget(with_help(QLabel("Запущенные программы с сетевыми соединениями:"), "apps"))
-        self.apps = table(["Программа", "Путь", "Соединений", "Текущее правило"], 1)
-        av.addWidget(self.apps, 1)
-        ar = QHBoxLayout()
-        ar.addWidget(btn("Обновить список", self.reload_apps))
-        ar.addWidget(btn("Программа → через VPN", lambda: self.app_rule("proxy"), "primary"))
-        ar.addWidget(btn("Программа → напрямую", lambda: self.app_rule("direct")))
-        ar.addWidget(btn("Сбросить", lambda: self.app_rule(None)))
-        ar.addStretch()
-        av.addLayout(ar)
-        tabs.addTab(a, "Программы")
 
         p = QWidget()
         pv = QVBoxLayout(p)
@@ -284,7 +84,6 @@ class SmartPage(QWidget):
         pv.addLayout(pr)
         pv.addStretch()
         tabs.addTab(p, "Базы правил")
-        tabs.currentChanged.connect(lambda i: self.reload_apps() if i == 1 else None)
         self.reload()
 
     @property
@@ -359,43 +158,6 @@ class SmartPage(QWidget):
             self.reload()
             self.app.status("")
         run_bg(lambda: (probe(pd, host), probe(pp, host)), done=done)
-
-    def reload_apps(self) -> None:
-        counts: dict[int, int] = {}
-        try:
-            for c in psutil.net_connections("inet"):
-                if c.pid and c.raddr:
-                    counts[c.pid] = counts.get(c.pid, 0) + 1
-        except (psutil.Error, OSError):
-            pass
-        rows: dict[str, list] = {}
-        for pid, n in counts.items():
-            try:
-                pr = psutil.Process(pid)
-                name, exe = pr.name(), pr.exe()
-            except (psutil.Error, OSError):
-                continue
-            if name in rows:
-                rows[name][2] += n
-            else:
-                rows[name] = [name, exe, n]
-        self.apps.setSortingEnabled(False)
-        self.apps.setRowCount(len(rows))
-        for i, (name, exe, n) in enumerate(sorted(rows.values(), key=lambda r: -r[2])):
-            r = self.db.get("process", name)
-            rule = "" if not r else ("VPN" if r["verdict"] == "proxy" else "напрямую") + f" ({r['source']})"
-            set_row(self.apps, i, [name, exe, n, rule], name)
-        self.apps.setSortingEnabled(True)
-
-    def app_rule(self, verdict: str | None) -> None:
-        for name in selected_data(self.apps):
-            if verdict is None:
-                self.app.engine.learner.remove_rule("process", name)
-            else:
-                self.app.engine.learner.set_rule("process", name, verdict)
-        self.reload_apps()
-        self.reload()
-        self.app.custom.load()
 
     def apply_presets(self) -> None:
         for k, cb in self.preset_boxes.items():
@@ -565,7 +327,9 @@ class CoresPage(QWidget):
         v.addStretch()
         self.info: dict = {}
         self.app_info: dict = {}
-        self.render_local()
+        self._shown_once = False
+        from .. import updater
+        self.app_cur.setText(updater.current_version_text())
 
     def show_app_info(self, info: dict) -> None:
         from .. import updater
@@ -604,20 +368,32 @@ class CoresPage(QWidget):
                "xray": "VLESS XHTTP", "mihomo": "AmneziaWG 1.0–3.1"}
 
     def render_local(self) -> None:
+        """Asking each core for its version starts a process: never on the UI thread (startup freeze)."""
+        def gather():
+            return {n: cores.installed_version(n) for n in cores.SPECS}, tunnels.openvpn_version(), \
+                cores.rules_age_days()
+        run_bg(gather, done=self._render_local)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if not self._shown_once:
+            self._shown_once = True
+            self.render_local()
+
+    def _render_local(self, data) -> None:
         from .. import updater
+        versions, ov, age = data
         self.app_cur.setText(updater.current_version_text())
         self.tbl.setRowCount(len(cores.SPECS))
         for i, name in enumerate(cores.SPECS):
             inf = self.info.get(name, {})
-            cur = cores.installed_version(name) or "не установлено"
+            cur = versions.get(name) or "не установлено"
             status = "доступно обновление" if inf.get("update") else ("актуально" if inf.get("latest") else "")
             if not inf.get("latest") and inf.get("url"):
                 status = inf["url"][:80]
             set_row(self.tbl, i, [name, self.PURPOSE.get(name, ""), cur, inf.get("latest", "—"), status], name)
-        ov = tunnels.openvpn_version()
         self.ovpn_lbl.setText(f"<b>OpenVPN</b> (для .ovpn): {ov or 'не установлен'}"
                               + ("" if winutil.IS_WIN else " — установка доступна только в Windows"))
-        age = cores.rules_age_days()
         self.rules_lbl.setText("Базы правил: " + ("не загружены" if age > 1e8 else f"обновлены {age:.1f} дн. назад"))
 
     def check(self) -> None:
@@ -690,10 +466,6 @@ class SettingsPage(QWidget):
             ("learn_min_bytes", "Минимум байт ответа", (100, 1_000_000)),
             ("learn_workers", "Параллельных проверок", (1, 32)),
             ("block_quic_direct", "Блокировать QUIC для прямых сайтов", bool),
-        ]),
-        ("Discord", [
-            ("preset_discord", "Discord через VPN (текст, голос, видео, стримы)", bool),
-            ("discord_isolate", "Отдельный выбор сервера для Discord", bool),
         ]),
         ("Надёжность", [
             ("auto_selector", "При сбоях переключаться на «Авто»", bool),
@@ -768,8 +540,18 @@ class SettingsPage(QWidget):
 
     def load(self) -> None:
         s = self.app.settings
-        if winutil.IS_WIN:
-            s["autostart"] = winutil.autostart_enabled()
+        if winutil.IS_WIN and not getattr(self, "_autostart_checking", False):
+            self._autostart_checking = True
+
+            def got(on):
+                self._autostart_checking = False
+                if bool(on) != bool(s["autostart"]):
+                    s["autostart"] = bool(on)
+                    s.save()
+                    w = self.widgets.get("autostart")
+                    if w:
+                        w[0].setChecked(bool(on))
+            run_bg(winutil.autostart_enabled, done=got, failed=lambda _e: setattr(self, "_autostart_checking", False))
         for key, (w, kind) in self.widgets.items():
             val = s[key]
             if kind is bool:
@@ -903,8 +685,29 @@ class AboutPage(QWidget):
         dl.setObjectName("muted")
         dl.setTextInteractionFlags(Qt.TextSelectableByMouse)
         v.addWidget(dl)
-        v.addWidget(QPushButton("Открыть папку данных", clicked=lambda: _open_path(paths.DATA_DIR)))
+        r = QHBoxLayout()
+        r.addWidget(QPushButton("Открыть папку данных", clicked=lambda: _open_path(paths.DATA_DIR)))
+        r.addStretch()
+        v.addLayout(r)
         v.addStretch()
+        g = QGroupBox("Удаление программы")
+        gv = QHBoxLayout(g)
+        gl = QLabel("Полностью убирает NexusVPN Pro: файлы, ярлыки, автозапуск, правила Брандмауэра и "
+                    "настройки прокси. Перед удалением можно сохранить свои настройки.")
+        gl.setWordWrap(True)
+        gv.addWidget(gl, 1)
+        gv.addWidget(btn("Удалить программу…", lambda: self._uninstall(app), "danger"))
+        v.addWidget(g)
+
+    def _uninstall(self, app) -> None:
+        from PySide6.QtWidgets import QDialog
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Удаление NexusVPN Pro")
+        dlg.resize(720, 520)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(app.uninstall_page)
+        dlg.exec()
+        app.uninstall_page.setParent(None)
 
 
 # ======================================================================= Uninstall

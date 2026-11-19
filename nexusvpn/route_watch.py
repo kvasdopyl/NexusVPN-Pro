@@ -21,7 +21,7 @@ from . import paths
 log = logging.getLogger("bypass")
 IS_WIN = os.name == "nt"
 NO_WINDOW = 0x08000000 if IS_WIN else 0
-POLL = 3.0
+POLL = 8.0
 
 
 def _private(ip: str) -> bool:
@@ -74,7 +74,8 @@ class RouteWatcher:
             return []
         out = []
         for rule in cfg.get("route", {}).get("rules", []):
-            if rule.get("outbound") in ("proxy", "discord") and rule.get("process_path_regex"):
+            # Discord needs no scan: its domains resolve to FakeIP and its voice ranges are routed already
+            if rule.get("outbound") == "proxy" and rule.get("process_path_regex"):
                 out += [re.compile(r.replace("(?i)", ""), re.I) for r in rule["process_path_regex"]]
         return out
 

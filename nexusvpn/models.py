@@ -72,6 +72,19 @@ class Node:
         return True
 
     @property
+    def voice_grade(self) -> int:
+        """2 — carries UDP as UDP (QUIC/WireGuard/Shadowsocks): voice never waits for a lost TCP packet;
+        1 — UDP inside a TCP stream (VLESS/VMess/Trojan): works, but one lost packet freezes the sound;
+        0 — no UDP at all."""
+        if not self.supports_udp:
+            return 0
+        if self.type in ("hysteria2", "tuic", "wireguard", "amneziawg", "ikev2", "shadowsocks"):
+            return 2
+        if self.type == "openvpn":
+            return 2 if (self.transport or "udp").startswith("udp") else 1
+        return 1
+
+    @property
     def needs_xray(self) -> bool:
         return self.transport in ("xhttp", "splithttp")
 

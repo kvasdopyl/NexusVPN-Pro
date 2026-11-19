@@ -124,7 +124,25 @@ def kill_stale() -> None:
         except (psutil.Error, OSError):
             pass
     paths.PID_FILE.unlink(missing_ok=True)
+    # a core that outlived a crash (or a hard reboot) holds the API port and the TUN: the PID file may be
+    # out of date, so also look at what is running from OUR cores folder — nothing else lives there
+    ours = str(paths.CORES_DIR).lower()
+    for p in psutil.process_iter(["name"]):
+        try:
+            name = (p.info["name"] or "").lower()
+            if not name.startswith(("sing-box", "xray", "mihomo")):
+                continue
+            if str(p.exe() or "").lower().startswith(ours):
+                log.warning("kill leftover %s (pid %s)", name, p.pid)
+                p.kill()
+        except (psutil.Error, OSError):
+            pass
     kill_orphans()
+
+
+# adapters whose addresses come and go on their own; they never carry our traffic
+VIRTUAL_IFACES = ("vEthernet", "VirtualBox", "VMware", "Hyper-V", "WSL", "Loopback", "Bluetooth", "Npcap",
+                  "Teredo", "isatap", "ZeroTier", "Radmin", "Hamachi", "docker", "br-", "veth")
 
 
 class Engine:
@@ -157,6 +175,13 @@ class Engine:
         self.learner = Learner(settings, self.api, self.emit)
         self.routes: RouteWatcher | None = None
         self.scope = "none"
+        self._running_cfg = ""
+        self._cfg_args: tuple = ({}, [])
+        self._reload_timer: threading.Timer | None = None
+        self._iface_pending: frozenset | None = None
+        self._voice_fails = 0
+        self._last_voice_check = 0.0
+        self._last_all_down = 0.0
         threading.Thread(target=self._watchdog, name="watchdog", daemon=True).start()
 
     # ------------------------------------------------------------------ helpers
@@ -206,6 +231,8 @@ class Engine:
         ifaces, exclude = self._start_tunnels()
         sb, xr, mh = config_builder.write_configs(self.s, self.store.nodes, ifaces=ifaces, exclude_ips=exclude,
                                                   tun_allowed=winutil.is_admin())
+        self._cfg_args = (ifaces, exclude)
+        self._running_cfg = self._comparable(sb, xr, mh)
         tun = next((i for i in sb["inbounds"] if i["type"] == "tun"), None)
         self.scope = "none" if not tun else ("all" if "route_address" not in tun
                                              else ("include" if self.s["capture_mode"] == "tun" else "voice"))
@@ -326,10 +353,75 @@ class Engine:
             self.stop()
             self.start()
 
+    @staticmethod
+    def _comparable(sb: dict, xr, mh) -> str:
+        sb = json.loads(json.dumps(sb))
+        return json.dumps([sb, xr, mh], sort_keys=True, default=str)
+
+    def needs_restart(self) -> bool:
+        """Would the new settings produce a different core config? Saving a setting that only the
+        program itself uses (autostart, window, games already in the rule files…) must not cut calls."""
+        if self.state != "running" or not self._running_cfg:
+            return self.state == "running"
+        ifaces, exclude = self._cfg_args
+        try:
+            enabled = [n for n in self.store.nodes if n.enabled]
+            sb = config_builder.build_singbox(self.s, self.store.nodes, ifaces=ifaces, exclude_ips=exclude,
+                                              tun_allowed=winutil.is_admin())
+            xr = config_builder.build_xray(enabled, self.s["log_level"])
+            mh = config_builder.build_mihomo(enabled, self.s["log_level"])
+        except ValueError:
+            return True
+        return self._comparable(sb, xr, mh) != self._running_cfg
+
     def reload(self) -> None:
-        """Apply new settings/nodes. Only restarts if the core is running."""
+        """Apply new settings/nodes. Restarts the core only if its config really changed."""
         if self.state == "running":
-            self.restart("настройки изменены")
+            if self.needs_restart():
+                self.restart("настройки изменены")
+            else:
+                log.info("настройки сохранены, перезапуск не нужен")
+
+    def reload_later(self, delay: float = 1.5) -> None:
+        """Coalesce a burst of changes (several clicks in a row) into one reload."""
+        with self._lock:
+            if self._reload_timer:
+                self._reload_timer.cancel()
+            self._reload_timer = threading.Timer(delay, self.reload)
+            self._reload_timer.daemon = True
+            self._reload_timer.start()
+
+    def select_voice_node(self, tag: str, now: bool = False) -> None:
+        """Discord's server. The running call stays on the old one unless now=True (Discord reconnects
+        the voice in 1-2 seconds)."""
+        self.s["discord_node"] = tag
+        self.s.save()
+        if self.state != "running":
+            return
+        try:
+            api = self.api()
+            api.select("discord", tag or "auto-udp")
+            if now:
+                for c in self.discord_connections():
+                    api.close_connection(c["id"])
+        except OSError:
+            self.reload()
+
+    def discord_connections(self) -> list[dict]:
+        if self.state != "running":
+            return []
+        try:
+            conns = self.api().connections().get("connections") or []
+        except (OSError, ValueError):
+            return []
+        out = []
+        for c in conns:
+            md = c.get("metadata") or {}
+            text = " ".join(c.get("chains") or []) + " " + str(md.get("processPath", "")) + " " + \
+                str(md.get("host", ""))
+            if "discord" in text.lower():
+                out.append(c)
+        return out
 
     def shutdown(self) -> None:
         self._stop_evt.set()
@@ -341,9 +433,29 @@ class Engine:
         self.s.save()
         if self.state == "running":
             try:
-                self.api().select("proxy", tag or "auto")
+                api = self.api()
+                api.select("proxy", tag or "auto")
+                # sites move to the new server at once; a running call (UDP) stays where it is
+                self._close_where(lambda c: "proxy" in (c.get("chains") or [])
+                                  and (c.get("metadata") or {}).get("network") != "udp", api)
             except OSError:
                 self.reload()
+
+    def _close_where(self, pred, api=None) -> int:
+        api = api or self.api()
+        try:
+            conns = api.connections().get("connections") or []
+        except (OSError, ValueError):
+            return 0
+        n = 0
+        for c in conns:
+            if pred(c):
+                try:
+                    api.close_connection(c["id"])
+                    n += 1
+                except OSError:
+                    pass
+        return n
 
     def on_resume(self) -> None:
         """After sleep: all TCP sessions are dead; flush them and verify the tunnel."""
@@ -364,7 +476,8 @@ class Engine:
         try:
             out = set()
             for name, addrs in psutil.net_if_addrs().items():
-                if paths.APP_SHORT in name or name.startswith(("tun", "NexusVPN IKEv2")):
+                if paths.APP_SHORT in name or name.startswith(("tun", "NexusVPN IKEv2")) or \
+                        any(v in name for v in VIRTUAL_IFACES):
                     continue
                 for a in addrs:
                     # IPv4 only: Windows rotates temporary IPv6 addresses, which is not a network change
@@ -417,13 +530,22 @@ class Engine:
         # network changed (Wi-Fi switch, cable, VPN of a third party): drop stale sessions fast
         snap = self._iface_snapshot()
         if snap and snap != self._ifaces:
-            self._ifaces = snap
-            log.info("network changed, flushing connections")
-            self.emit("network_changed", {})
-            try:
-                self.api().close_all()
-            except OSError:
-                pass
+            lost = self._ifaces - snap
+            if not lost:
+                self._ifaces = snap          # a new adapter appeared: existing sessions are fine
+                self._iface_pending = None
+            elif self._iface_pending != snap:
+                self._iface_pending = snap   # must hold for two checks (10 s): ignore short blips
+            else:
+                self._ifaces, self._iface_pending = snap, None
+                log.info("network changed (%s gone), flushing connections", ", ".join(sorted(n for n, _ in lost)))
+                self.emit("network_changed", {})
+                try:
+                    self.api().close_all()
+                except OSError:
+                    pass
+        else:
+            self._iface_pending = None
 
         # memory guard for weeks-long uptime
         try:
@@ -433,6 +555,11 @@ class Engine:
                 return
         except psutil.Error:
             pass
+
+        if self.voice_active():
+            self._watch_voice()
+        else:
+            self._voice_fails = 0
 
         if time.time() - self._last_hc >= int(self.s["health_check_interval"]):
             self._last_hc = time.time()
@@ -446,35 +573,78 @@ class Engine:
 
     def voice_active(self) -> bool:
         """True while a Discord (or any app routed via the discord group) UDP session is open."""
-        if self.state != "running":
-            return False
+        return any((c.get("metadata") or {}).get("network") == "udp" for c in self.discord_connections())
+
+    VOICE_CHECK_EVERY = 20
+
+    def _watch_voice(self) -> None:
+        """During a call: if the server carrying the voice stops answering, move the call to the best
+        working UDP server. Discord notices the closed session and reconnects the voice in 1-2 s."""
+        if time.time() - self._last_voice_check < self.VOICE_CHECK_EVERY or self.s["discord_node"]:
+            return
+        self._last_voice_check = time.time()
+        api = self.api()
+        group = "discord" if api.now("discord") else "proxy"
+        if api.delay(group, self.s["health_check_url"], 4000) >= 0:
+            self._voice_fails = 0
+            return
+        self._voice_fails += 1
+        log.warning("voice server not answering (%d)", self._voice_fails)
+        if self._voice_fails < 2 or group != "discord":
+            return
+        res = api.group_delay("auto-udp", self.s["health_check_url"], 4000)
+        alive = {k: v for k, v in res.items() if isinstance(v, int) and v > 0}
+        current = api.now("auto-udp")
+        if not alive or (current in alive and len(alive) == 1):
+            return
+        best = min(alive, key=alive.get)
         try:
-            for c in self.api().connections().get("connections") or []:
-                md = c.get("metadata") or {}
-                text = " ".join(c.get("chains") or []) + " " + str(md.get("processPath", ""))
-                if md.get("network") == "udp" and "discord" in text.lower():
-                    return True
-        except (OSError, ValueError):
-            pass
+            api.select("discord", best)
+        except OSError:
+            return
+        moved = self._close_where(lambda c: "discord" in (c.get("chains") or []), api)
+        self._voice_fails = 0
+        log.warning("voice moved to %s (%s ms), %d sessions reconnect", best, alive[best], moved)
+        self.emit("voice_moved", {"node": best, "delay": alive[best]})
+
+    @staticmethod
+    def _internet_ok() -> bool:
+        import socket
+        for host in ("1.1.1.1", "77.88.8.8", "8.8.8.8"):
+            try:
+                socket.create_connection((host, 443), timeout=3).close()
+                return True
+            except OSError:
+                continue
         return False
 
     def _failover(self) -> None:
         api = self.api()
         res = api.group_delay("auto", self.s["health_check_url"], 5000)
         alive = {k: v for k, v in res.items() if isinstance(v, int) and v > 0}
+        self._fails = 0
         if not alive:
+            if not self._internet_ok():
+                log.warning("no internet at all — waiting, restarting would not help")
+                return
             self.emit("all_down", {})
-            self.restart("все серверы недоступны")
-            self._fails = 0
+            if time.time() - self._last_all_down > 600:
+                self._last_all_down = time.time()
+                self.restart("все серверы недоступны")
             return
+        current = api.now("proxy")
+        if current in alive:
+            return            # the server answers again: nothing to fix, nothing to cut
         best = min(alive, key=alive.get)
         log.warning("failover -> %s (%s ms)", best, alive[best])
         try:
             api.select("proxy", "auto" if self.s["auto_selector"] else best)
         except OSError:
-            pass
+            return
+        # sessions on the dead server are dead anyway; the voice is handled by its own group
+        self._close_where(lambda c: "proxy" in (c.get("chains") or [])
+                          and "discord" not in (c.get("chains") or []), api)
         self.emit("failover", {"node": best, "delay": alive[best]})
-        self._fails = 0
 
 
 class Service:

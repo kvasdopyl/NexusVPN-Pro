@@ -134,24 +134,62 @@ def allow_in_firewall(exe_paths: list[str]) -> None:
 
 
 # ------------------------------------------------------------------ autostart
+def _xml(s: str) -> str:
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
+def autostart_task_xml(user: str, exe: str, args: str) -> str:
+    """Task Scheduler defaults are hostile to a VPN: no start on battery, stop on battery, kill after
+    72 hours. Spell every setting out."""
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>NexusVPN Pro: запуск и подключение при входе в Windows</Description></RegistrationInfo>
+  <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{_xml(user)}</UserId><Delay>PT10S</Delay></LogonTrigger></Triggers>
+  <Principals><Principal id="Author"><UserId>{_xml(user)}</UserId><LogonType>InteractiveToken</LogonType>
+    <RunLevel>HighestAvailable</RunLevel></Principal></Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>5</Priority>
+  </Settings>
+  <Actions Context="Author"><Exec><Command>{_xml(exe)}</Command><Arguments>{_xml(args)}</Arguments></Exec></Actions>
+</Task>
+"""
+
+
 def set_autostart(enabled: bool) -> tuple[bool, str]:
     """Scheduled task with highest privileges: starts elevated at logon without a UAC prompt."""
     if not IS_WIN:
         return False, "только Windows"
-    if enabled:
-        if getattr(sys, "frozen", False):
-            tr = f'"{sys.executable}" --autostart'
-        else:
-            tr = f'"{sys.executable}" "{paths.BASE_DIR / "main.py"}" --autostart'
-        cmd = ["schtasks", "/Create", "/TN", TASK_NAME, "/TR", tr, "/SC", "ONLOGON",
-               "/RL", "HIGHEST", "/F", "/DELAY", "0000:15"]
+    if not enabled:
+        r = subprocess.run(["schtasks", "/Delete", "/TN", TASK_NAME, "/F"], capture_output=True, text=True,
+                           creationflags=NO_WINDOW)
+        return r.returncode == 0, (r.stdout + r.stderr).strip()
+    if getattr(sys, "frozen", False):
+        exe, args = sys.executable, "--autostart"
     else:
-        cmd = ["schtasks", "/Delete", "/TN", TASK_NAME, "/F"]
-    r = subprocess.run(cmd, capture_output=True, text=True, creationflags=NO_WINDOW)
+        exe, args = sys.executable, f'"{paths.BASE_DIR / "main.py"}" --autostart'
+    user = f"{os.environ.get('USERDOMAIN', '')}\\{os.environ.get('USERNAME', '')}".strip("\\")
+    xml_path = paths.RUN_DIR / "autostart-task.xml"
+    xml_path.write_text(autostart_task_xml(user, exe, args), encoding="utf-16")
+    r = subprocess.run(["schtasks", "/Create", "/TN", TASK_NAME, "/XML", str(xml_path), "/F"],
+                       capture_output=True, text=True, creationflags=NO_WINDOW)
+    xml_path.unlink(missing_ok=True)
     return r.returncode == 0, (r.stdout + r.stderr).strip()
 
 
 def autostart_enabled() -> bool:
+    """Slow on Windows (a schtasks process): call it from a background thread."""
     if not IS_WIN:
         return False
     r = subprocess.run(["schtasks", "/Query", "/TN", TASK_NAME], capture_output=True, creationflags=NO_WINDOW)

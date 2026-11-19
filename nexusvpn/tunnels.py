@@ -60,10 +60,11 @@ def free_port() -> int:
 def kill_orphans() -> None:
     """openvpn.exe processes started from our run dir by a crashed previous session."""
     marker = str(paths.OVPN_DIR).lower()
-    for p in psutil.process_iter(["name", "cmdline"]):
+    for p in psutil.process_iter(["name"]):
         try:
+            # reading every command line is slow on Windows: look only at openvpn processes
             if (p.info["name"] or "").lower().startswith("openvpn") and \
-                    marker in " ".join(p.info["cmdline"] or []).lower():
+                    marker in " ".join(p.cmdline() or []).lower():
                 p.kill()
         except (psutil.Error, OSError):
             pass

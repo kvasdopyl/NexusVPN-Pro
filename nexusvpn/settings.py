@@ -44,6 +44,7 @@ DEFAULTS: dict[str, Any] = {
     "preset_whatsapp": True,
     "preset_steam_direct": True,      # Steam downloads direct = faster
     "discord_isolate": True,          # own selector for Discord, picks a UDP-capable node
+    "discord_node": "",               # "" = best node that carries UDP natively; else a node tag
     "local_services_direct": True,
 
     # ---- dns ----

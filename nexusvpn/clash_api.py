@@ -48,6 +48,13 @@ class ClashAPI:
     def select(self, group: str, name: str) -> None:
         self._req("PUT", f"/proxies/{urllib.parse.quote(group)}", {"name": name})
 
+    def now(self, group: str) -> str:
+        """Which member a selector/urltest group currently uses ('' if unknown)."""
+        try:
+            return (self._req("GET", f"/proxies/{urllib.parse.quote(group)}") or {}).get("now", "") or ""
+        except (OSError, ValueError):
+            return ""
+
     def delay(self, name: str, url: str, timeout_ms: int = 5000) -> int:
         q = urllib.parse.urlencode({"url": url, "timeout": timeout_ms})
         try:

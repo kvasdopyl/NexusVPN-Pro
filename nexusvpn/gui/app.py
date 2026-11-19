@@ -21,8 +21,9 @@ from ..subscription import NodeStore
 from .common import COLORS, STATE_TEXT, THEME, Bridge, apply_dark_theme, run_bg, status_icon
 from .pages import MODES, HomePage, ServersPage
 from .pages3 import GamesPage, NoWheelUntilClicked
-from .pages2 import (AboutPage, ConnectionsPage, CoresPage, CustomRoutingPage, LogsPage, SettingsPage,
-                     SmartPage, UninstallPage)
+from .discord_page import DiscordPage
+from .pages2 import (AboutPage, ConnectionsPage, CoresPage, LogsPage, SettingsPage, SmartPage, UninstallPage)
+from .routing import CustomRoutingPage
 
 log = logging.getLogger("app")
 INSTANCE_KEY = "NexusVPN-Pro-single-instance"
@@ -44,7 +45,9 @@ class MainWindow(QMainWindow):
         h.setSpacing(0)
         self.nav = QListWidget()
         self.nav.setObjectName("nav")
-        self.nav.setFixedWidth(200)
+        self.nav.setFixedWidth(230)
+        self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.nav.setTextElideMode(Qt.ElideRight)
         self.stack = QStackedWidget()
         h.addWidget(self.nav)
         content = QWidget()
@@ -84,8 +87,7 @@ class NexusApp:
         self.settings = Settings()
         self.ring = setup_logging(int(self.settings["log_max_mb"]))
         log.info("NexusVPN Pro start, data=%s admin=%s", paths.DATA_DIR, winutil.is_admin())
-        # crash recovery: proxy left pointing to us, orphan cores holding the TUN
-        kill_stale()
+        self.autostarted = autostart
         winutil.clear_system_proxy(int(self.settings["mixed_port"]))
 
         self._quitting = False
@@ -112,15 +114,16 @@ class NexusApp:
         self.about = AboutPage(self)
         self.uninstall_page = UninstallPage(self)
         self.games = GamesPage(self)
+        self.discord = DiscordPage(self)
         self.page_index = {}
         for key, title, page in (("home", "  Главная", self.home), ("servers", "  Серверы", self.servers),
                                  ("custom", "  Своя маршрутизация", self.custom),
                                  ("games", "  Игры", self.games),
+                                 ("discord", "  Discord", self.discord),
                                  ("smart", "  Умная маршрутизация", self.smart),
                                  ("conns", "  Соединения", self.conns), ("cores", "  Обновления", self.cores),
                                  ("settings", "  Настройки", self.settings_page), ("logs", "  Журнал", self.logs),
-                                 ("about", "  О программе", self.about),
-                                 ("uninstall", "  Удаление", self.uninstall_page)):
+                                 ("about", "  О программе и удаление", self.about)):
             self.page_index[key] = self.win.nav.count()
             self.win.add_page(title, page)
         self.win.nav.setCurrentRow(0)
@@ -138,7 +141,8 @@ class NexusApp:
         if winutil.IS_WIN and self.settings["autostart"]:
             # the program may have moved (zip folder -> Program Files): keep the logon task pointing here
             run_bg(winutil.set_autostart, True)
-        QTimer.singleShot(300, self._first_run)
+        # crash recovery (orphan cores holding the TUN) walks every process: slow on Windows, so off the window
+        QTimer.singleShot(150, lambda: run_bg(kill_stale, done=lambda _r: self._first_run()))
 
     # ------------------------------------------------------------------ startup
     def _first_run(self) -> None:
@@ -235,14 +239,26 @@ class NexusApp:
         self.tray.hide()
         self.qapp.quit()
 
-    def _autoconnect(self) -> None:
-        """Reconnect on launch if the VPN was on when the program last ran (survives reboots)."""
-        if not self.store.nodes and self.settings["subscriptions"]:
-            run_bg(self.service.update_subscriptions, False, None,
-                   done=lambda m: (self.nodes_changed(), self.store.nodes and self._autoconnect()))
+    def _autoconnect(self, attempt: int = 0) -> None:
+        """Started with Windows (autostart) -> always connect. Started by hand -> reconnect if the VPN
+        was on last time. Right after logon the network may still be coming up: keep trying."""
+        want = self.autostarted or self.settings["was_connected"]
+        if not want or self.engine.state in ("running", "starting"):
             return
-        if self.store.enabled() and self.settings["was_connected"]:
-            run_bg(self.engine.start)
+        if not self.store.enabled():
+            if self.settings["subscriptions"] and attempt < 8:
+                def retry(_m=None):
+                    self.nodes_changed()
+                    if self.store.enabled():
+                        self._autoconnect(attempt + 1)
+                    else:
+                        QTimer.singleShot(15000, lambda: self._autoconnect(attempt + 1))
+                run_bg(self.service.update_subscriptions, False, None, done=retry,
+                       failed=lambda _e: QTimer.singleShot(15000, lambda: self._autoconnect(attempt + 1)))
+            return
+        if self.autostarted:
+            log.info("запуск вместе с Windows — подключение")
+        run_bg(self.engine.start)
 
     # ------------------------------------------------------------------ tray
     def _build_tray(self) -> None:
@@ -297,6 +313,15 @@ class NexusApp:
 
     # ------------------------------------------------------------------ events
     def on_event(self, name: str, data: dict) -> None:
+        if name == "rules_changed":
+            # lists changed: the core reloads rule files by itself; a restart happens only if the config
+            # really changes (e.g. the first program sent through the VPN in «Мимо программы»)
+            self.engine.reload_later()
+            return
+        if name == "voice_moved":
+            self.notify(f"Сервер голоса не отвечал — звонок Discord перенесён на {data['node']} "
+                        f"({data['delay']} мс)", "discord", ms=5000)
+            return
         if name == "state":
             st = data["state"]
             icon = status_icon(COLORS.get(st, "#64748b"))

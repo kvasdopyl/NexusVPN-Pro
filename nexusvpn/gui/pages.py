@@ -35,8 +35,7 @@ class HomePage(QWidget):
         brand = QLabel(paths.APP_NAME)
         brand.setObjectName("brand")
         v.addWidget(brand)
-        sub = QLabel("Профессиональный VPN-клиент с интеллектуальной самообучающейся маршрутизацией "
-                     "(Smart Auto-Split Tunneling)")
+        sub = QLabel("Нажмите большую кнопку, чтобы включить или выключить VPN.")
         sub.setObjectName("muted")
         sub.setWordWrap(True)
         v.addWidget(sub)
@@ -57,20 +56,27 @@ class HomePage(QWidget):
         self._cores_update: dict = {}
 
         top = QHBoxLayout()
-        self.connect_btn = QPushButton("ВКЛ")
+        self.connect_btn = QPushButton("ВЫКЛЮЧЕН")
         self.connect_btn.setObjectName("bigconnect")
+        self.connect_btn.setCursor(Qt.PointingHandCursor)
         self.connect_btn.clicked.connect(self.toggle)
         top.addWidget(self.connect_btn, 0, Qt.AlignVCenter)
-        top.addWidget(HelpButton("power"), 0, Qt.AlignTop)
         info = QVBoxLayout()
         self.state_lbl = QLabel()
+        self.action_lbl = QLabel()
+        self.action_lbl.setObjectName("muted")
         self.err_lbl = QLabel()
         self.err_lbl.setWordWrap(True)
         self.err_lbl.setStyleSheet("color:#fca5a5")
         self.detail_lbl = QLabel()
         self.detail_lbl.setObjectName("muted")
         self.detail_lbl.setWordWrap(True)
-        for w in (self.state_lbl, self.detail_lbl, self.err_lbl):
+        state_row = QHBoxLayout()
+        state_row.addWidget(self.state_lbl)
+        state_row.addWidget(HelpButton("power"))
+        state_row.addStretch()
+        info.addLayout(state_row)
+        for w in (self.action_lbl, self.detail_lbl, self.err_lbl):
             info.addWidget(w)
         info.addStretch()
         top.addSpacing(14)
@@ -124,7 +130,6 @@ class HomePage(QWidget):
         cards.addWidget(self.c_routes, 2, 0, 1, 2)
         v.addLayout(cards)
         self.routes: dict = {}
-        v.addWidget(with_help(QLabel(""), "cards"))
         v.addStretch()
         self.up = self.down = 0
         self.ping = None
@@ -223,11 +228,15 @@ class HomePage(QWidget):
     def refresh(self) -> None:
         eng = self.app.engine
         st = eng.state
+        self.sync_mode()
         self.state_lbl.setText(STATE_TEXT.get(st, st))
         self.state_lbl.setStyleSheet(f"font-size:16pt;font-weight:700;color:{COLORS.get(st)}")
-        self.connect_btn.setText("ВЫКЛ" if st in ("running", "starting") else "ВКЛ")
+        on = st in ("running", "starting")
+        self.connect_btn.setText({"running": "ВКЛЮЧЁН", "starting": "…", "stopping": "…"}.get(st, "ВЫКЛЮЧЕН"))
         self.connect_btn.setStyleSheet(
-            f"background:{'#15803d' if st == 'running' else '#1e293b'};border:3px solid {COLORS.get(st)}")
+            f"background:{'#15803d' if st == 'running' else '#1e293b'};border:3px solid {COLORS.get(st)};"
+            f"color:{'white' if st == 'running' else '#94a3b8'}")
+        self.action_lbl.setText("Нажмите кнопку, чтобы выключить VPN" if on else "Нажмите кнопку, чтобы включить VPN")
         err = eng.error if st == "error" else ""
         if eng.tunnel_errors and st == "running":
             err = "Не подключились: " + "; ".join(f"{k}: {v}" for k, v in eng.tunnel_errors.items())

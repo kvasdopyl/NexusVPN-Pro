@@ -287,3 +287,92 @@ def test_system_proxy_gets_voice_tun(tmp_path):
     assert not any(i["type"] == "tun" for i in cb.build_singbox(s, nodes, tun_allowed=False)["inbounds"])
     s.update(routing_mode="custom")       # no presets -> nothing for the TUN -> no TUN at all
     assert not any(i["type"] == "tun" for i in cb.build_singbox(s, nodes)["inbounds"])
+
+
+def test_custom_mode_discord_voice_enters_tun(tmp_path):
+    import ipaddress
+    from nexusvpn.learner import LearnDB
+    db = LearnDB()
+    db.replace_user("proxy", [("process", "Discord.exe"), ("domain", "discord.com")])
+    db.export()
+    try:
+        s = Settings(tmp_path / "s.json")
+        s.update(capture_mode="tun", routing_mode="custom", direct_bypass="full", custom_use_presets=False)
+        cfg = cb.build_singbox(s, parse_subscription("\n".join(LINKS))[0])
+        nets = [ipaddress.ip_network(c) for c in _tun(cfg)["route_address"]]
+        for ip in ("104.29.157.153", "66.22.196.10", "162.159.135.232"):
+            assert any(ipaddress.ip_address(ip) in n for n in nets), ip
+        rules = cfg["route"]["rules"]
+        disc = next(i for i, r in enumerate(rules) if r.get("outbound") == "discord")
+        user = next(i for i, r in enumerate(rules) if "user-proxy" in r.get("rule_set", []))
+        assert disc < user          # Discord.exe from the user's list still uses the voice group
+    finally:
+        db.replace_user("proxy", [])
+        db.export()
+
+
+def test_server_switch_keeps_calls(tmp_path):
+    s = Settings(tmp_path / "s.json")
+    cfg = cb.build_singbox(s, parse_subscription("\n".join(LINKS))[0])
+    groups = {o["tag"]: o for o in cfg["outbounds"] if o.get("type") in ("selector", "urltest")}
+    assert all(g.get("interrupt_exist_connections") is False for g in groups.values())
+
+
+class _FakeAPI:
+    def __init__(self, delays, now):
+        self.delays, self._now, self.selected, self.closed = delays, now, [], []
+        self.conns = [{"id": "v", "chains": ["Hy2", "auto-udp", "discord"], "metadata": {"network": "udp"}},
+                      {"id": "w", "chains": ["Vless", "proxy"], "metadata": {"network": "tcp"}}]
+
+    def now(self, g):
+        return self._now.get(g, "")
+
+    def delay(self, name, url, t):
+        return self.delays.get(self._now.get(name, name), -1)
+
+    def group_delay(self, g, url, t):
+        return {k: v for k, v in self.delays.items()}
+
+    def select(self, g, n):
+        self.selected.append((g, n))
+        self._now[g] = n
+
+    def connections(self):
+        return {"connections": self.conns}
+
+    def close_connection(self, cid):
+        self.closed.append(cid)
+
+
+def _engine_with(api, tmp_path):
+    from nexusvpn.engine import Engine
+    eng = Engine.__new__(Engine)
+    eng.s = Settings(tmp_path / "s.json")
+    eng.api = lambda: api
+    eng.emit = lambda *a: None
+    eng._voice_fails = eng._last_voice_check = eng._last_all_down = 0
+    eng._fails = 0
+    eng.restart = lambda *a: (_ for _ in ()).throw(AssertionError("restart"))
+    return eng
+
+
+def test_voice_moves_only_after_two_failures(tmp_path):
+    api = _FakeAPI({"Hy2": -1, "Tuic": 90}, {"discord": "auto-udp", "auto-udp": "Hy2", "proxy": "Vless"})
+    api.delays["auto-udp"] = -1
+    eng = _engine_with(api, tmp_path)
+    eng._watch_voice()
+    assert api.selected == []                      # one miss is not enough
+    eng._last_voice_check = 0
+    eng._watch_voice()
+    assert api.selected == [("discord", "Tuic")] and api.closed == ["v"]   # only the call reconnects
+
+
+def test_failover_leaves_calls_alone(tmp_path):
+    api = _FakeAPI({"Vless": -1, "Trojan": 120}, {"proxy": "Vless"})
+    eng = _engine_with(api, tmp_path)
+    eng._failover()
+    assert ("proxy", "auto") in api.selected and api.closed == ["w"]
+    api2 = _FakeAPI({"Vless": 80}, {"proxy": "Vless"})
+    eng2 = _engine_with(api2, tmp_path)
+    eng2._failover()
+    assert api2.selected == [] and api2.closed == []   # server answers again: nothing is cut

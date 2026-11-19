@@ -11,6 +11,18 @@ from .discord_voice import DISCORD_VOICE_CIDRS
 from .presets import (DISCORD_DOMAINS, DISCORD_PROCESS_REGEX, TELEGRAM_CIDRS, enabled_presets, game_rules)
 
 FAKEIP_V4, FAKEIP_V6 = "198.18.0.0/15", "fc00::/18"
+DISCORD_VOICE_PORTS = ["19294:19344", "50000:65535"]
+
+
+def discord_enabled(s, use_presets: bool) -> bool:
+    """Discord gets its own voice server when the preset is on or the user listed Discord for the VPN;
+    never when the user sent Discord direct."""
+    def has(path):
+        vals = _rule_file_values(path, "domain_suffix") + _rule_file_values(path, "process_name")
+        return any("discord" in v.lower() for v in vals)
+    if has(paths.USER_DIRECT_RS):
+        return False
+    return (bool(s["preset_discord"]) and use_presets) or has(paths.USER_PROXY_RS)
 
 XRAY_BASE_PORT = 10850
 MIHOMO_BASE_PORT = 10900
@@ -327,7 +339,7 @@ def _rule_file_cidrs(path) -> list[str]:
 def tun_routes(s, scope: str, use_presets: bool) -> list[str]:
     """Destinations that enter the TUN when it is not the default route. Domains that need the VPN
     resolve to FakeIP, so the FakeIP range carries them; raw-IP services are listed explicitly."""
-    discord = use_presets and s["preset_discord"]
+    discord = discord_enabled(s, use_presets)
     telegram = use_presets and s["preset_telegram"]
     out = [] if scope == "voice" else [FAKEIP_V4] + ([FAKEIP_V6] if s["ipv6_mode"] != "off" else [])
     if telegram:
@@ -383,20 +395,27 @@ def build_singbox(settings, nodes: list[Node], log_level: str | None = None,
     groups = [{"type": "urltest", "tag": "auto", "outbounds": tags, "url": hc_url, "interval": interval,
                "tolerance": 80, "idle_timeout": "30m", "interrupt_exist_connections": False}]
     active = s["active_node"] if s["active_node"] in tags else "auto"
+    # switching the server must never cut a running call: the engine closes only what has to move
     groups.append({"type": "selector", "tag": "proxy", "outbounds": ["auto", *tags], "default": active,
-                   "interrupt_exist_connections": True})
+                   "interrupt_exist_connections": False})
     use_presets = mode in ("smart", "global") or (mode == "custom" and s["custom_use_presets"])
     if scope == "voice" and not tun_routes(s, scope, use_presets):
         scope = "none"   # an empty route_address would make the TUN the default route
-    discord_on = bool(s["preset_discord"]) and use_presets
+    discord_on = discord_enabled(s, use_presets)
     discord_out = "proxy"
     if discord_on and s["discord_isolate"] and udp_tags:
-        groups.append({"type": "urltest", "tag": "auto-udp", "outbounds": udp_tags, "url": hc_url,
-                       "interval": interval, "tolerance": 80, "idle_timeout": "30m",
-                       # never cut a running voice call because another node got 5 ms faster
+        # voice is a stream of small UDP packets: a node that carries UDP as UDP (Hysteria2, WireGuard…)
+        # just drops a lost packet, a TCP-based node (VLESS/Trojan) stalls the whole sound until resent
+        grade = {n.tag: n.voice_grade for n in nodes}
+        native = [t for t in udp_tags if grade.get(t) == 2]
+        pool = native or udp_tags
+        groups.append({"type": "urltest", "tag": "auto-udp", "outbounds": pool, "url": hc_url,
+                       "interval": interval, "tolerance": 150, "idle_timeout": "30m",
+                       # never cut a running voice call because another node got a few ms faster
                        "interrupt_exist_connections": False})
+        chosen = s["discord_node"] if s["discord_node"] in udp_tags else "auto-udp"
         groups.append({"type": "selector", "tag": "discord", "outbounds": ["auto-udp", "proxy", *udp_tags],
-                       "default": "auto-udp", "interrupt_exist_connections": False})
+                       "default": chosen, "interrupt_exist_connections": False})
         discord_out = "discord"
     outbounds = outbounds + groups + [{"type": "direct", "tag": "direct"}]
 
@@ -448,6 +467,9 @@ def build_singbox(settings, nodes: list[Node], log_level: str | None = None,
         if discord_on:
             rules.append({"process_path_regex": [DISCORD_PROCESS_REGEX], "outbound": discord_out})
             rules.append({"domain_suffix": DISCORD_DOMAINS, "outbound": discord_out})
+            # voice from a browser tab or after the client resolved the server itself: by address and port
+            rules.append({"network": "udp", "ip_cidr": DISCORD_VOICE_CIDRS, "port_range": DISCORD_VOICE_PORTS,
+                          "outbound": discord_out})
             if preset_discord:
                 rules.append({"rule_set": preset_discord, "outbound": discord_out})
 
@@ -459,8 +481,8 @@ def build_singbox(settings, nodes: list[Node], log_level: str | None = None,
         final = "direct"
     else:  # smart / custom
         final = "direct"
+        discord_rules()   # before the user's VPN list, so Discord written there still gets the voice server
         rules.append({"rule_set": ["user-proxy", "user-proxy-ip"], "outbound": "proxy"})
-        discord_rules()
         if use_presets:
             if s["preset_telegram"]:
                 rules.append({"ip_cidr": TELEGRAM_CIDRS, "outbound": "proxy"})

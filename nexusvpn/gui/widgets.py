@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QPushButton, QTableWidget,
-                               QTableWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QHBoxLayout, QHeaderView, QLabel, QPushButton,
+                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from .common import HelpButton
 
@@ -80,3 +80,45 @@ def group_header(title: str, help_key: str) -> QWidget:
     h.addWidget(HelpButton(help_key))
     h.addStretch()
     return w
+
+
+class Segmented(QWidget):
+    """A row of exclusive buttons: the chosen one is filled in. Used everywhere a thing can be
+    «через VPN / напрямую / не трогать», so the current state is always visible at a glance."""
+
+    def __init__(self, options: list[tuple[str, str, str]], current: str, on_change, parent=None):
+        """options: [(key, label, tooltip)]"""
+        super().__init__(parent)
+        self.on_change = on_change
+        h = QHBoxLayout(self)
+        h.setContentsMargins(2, 1, 2, 1)
+        h.setSpacing(0)
+        self.group = QButtonGroup(self)
+        self.group.setExclusive(True)
+        self.buttons: dict[str, QPushButton] = {}
+        for i, (key, label, tip) in enumerate(options):
+            b = QPushButton(label)
+            b.setObjectName("seg")
+            b.setCheckable(True)
+            b.setProperty("pos", "first" if i == 0 else ("last" if i == len(options) - 1 else "mid"))
+            b.setProperty("state", key)
+            b.setChecked(key == current)
+            b.setToolTip(tip)
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _=False, k=key: self.pick(k, notify=True))
+            self.group.addButton(b)
+            self.buttons[key] = b
+            h.addWidget(b)
+        self.key = current
+
+    def pick(self, key: str, notify: bool = False) -> None:
+        self.key = key
+        self.buttons[key].setChecked(True)
+        if notify and self.on_change:
+            self.on_change(key)
+
+    @staticmethod
+    def verdict_options(direct_label: str = "Напрямую") -> list[tuple[str, str, str]]:
+        return [("proxy", "Через VPN", "Всё соединение идёт через VPN-сервер"),
+                ("direct", direct_label, "Как будто VPN выключен: напрямую через вашу сетевую карту"),
+                ("auto", "Авто", "Решает программа: умная маршрутизация и базы правил")]
