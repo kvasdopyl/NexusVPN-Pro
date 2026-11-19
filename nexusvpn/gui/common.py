@@ -1,13 +1,16 @@
 """Qt plumbing: thread-safe event bridge, background jobs, theme, icons."""
 from __future__ import annotations
 
+import sys
 import traceback
+from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QObject, QPoint, QRunnable, Qt, QThreadPool, Signal
-from PySide6.QtGui import QColor, QIcon, QPainter, QPalette, QPixmap, QBrush, QPen
+from PySide6.QtCore import QObject, QPoint, QRunnable, QSize, Qt, QThreadPool, Signal
+from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPalette, QPen, QPixmap
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QToolButton, QVBoxLayout, QWidget
 
+from .. import paths
 from .help_texts import HELP
 
 
@@ -106,22 +109,48 @@ def with_help(widget: QWidget, key: str, stretch: bool = False) -> QWidget:
     return w
 
 
-def status_icon(color: str, size: int = 64) -> QIcon:
-    pm = QPixmap(size, size)
-    pm.fill(Qt.transparent)
-    p = QPainter(pm)
+def app_icon() -> QIcon:
+    """The same icon as the desktop shortcut. PyInstaller unpacks bundled assets into sys._MEIPASS."""
+    base = Path(getattr(sys, "_MEIPASS", paths.BASE_DIR))
+    return QIcon(str(base / "assets" / "icon.ico"))
+
+
+def _crossed(pm: QPixmap) -> QPixmap:
+    img = pm.toImage().convertToFormat(QImage.Format_ARGB32)
+    for y in range(img.height()):
+        for x in range(img.width()):
+            c = img.pixelColor(x, y)
+            g = int(0.3 * c.red() + 0.59 * c.green() + 0.11 * c.blue())
+            img.setPixelColor(x, y, QColor(g, g, g, int(c.alpha() * 0.75)))
+    out = QPixmap.fromImage(img)
+    w = out.width()
+    p = QPainter(out)
     p.setRenderHint(QPainter.Antialiasing)
-    p.setPen(QPen(QColor("#0b1220"), size * 0.06))
-    p.setBrush(QBrush(QColor(color)))
-    m = size * 0.08
-    p.drawEllipse(int(m), int(m), int(size - 2 * m), int(size - 2 * m))
-    p.setPen(QPen(QColor("white"), size * 0.09, Qt.SolidLine, Qt.RoundCap))
-    c = size / 2
-    # shield-ish check mark
-    p.drawLine(int(c - size * 0.18), int(c), int(c - size * 0.04), int(c + size * 0.15))
-    p.drawLine(int(c - size * 0.04), int(c + size * 0.15), int(c + size * 0.2), int(c - size * 0.14))
+    m = w * 0.1
+    # dark outline first so the red line stays visible on light and dark taskbars
+    for color, width in (("#0b1220", max(2.0, w * 0.2)), ("#ef4444", max(1.5, w * 0.12))):
+        p.setPen(QPen(QColor(color), width, Qt.SolidLine, Qt.RoundCap))
+        p.drawLine(int(m), int(m), int(w - m), int(w - m))
     p.end()
-    return QIcon(pm)
+    return out
+
+
+_TRAY: dict[bool, QIcon] = {}
+
+
+def tray_icon(connected: bool) -> QIcon:
+    """Tray: the bright app icon while the VPN is on, grey and crossed out otherwise."""
+    if connected not in _TRAY:
+        base = app_icon()
+        if connected:
+            _TRAY[True] = base
+        else:
+            icon = QIcon()
+            for size in base.availableSizes() or [QSize(32, 32)]:
+                if size.width() <= 64:
+                    icon.addPixmap(_crossed(base.pixmap(size)))
+            _TRAY[False] = icon
+    return _TRAY[connected]
 
 
 COLORS = {"running": "#22c55e", "starting": "#f59e0b", "stopping": "#f59e0b", "stopped": "#64748b",
