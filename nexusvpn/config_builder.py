@@ -8,7 +8,8 @@ import re
 from . import paths
 from .models import Node
 from .discord_voice import DISCORD_VOICE_CIDRS
-from .presets import (DISCORD_DOMAINS, DISCORD_PROCESS_REGEX, TELEGRAM_CIDRS, enabled_presets, game_rules)
+from .presets import (DISCORD_DOMAINS, DISCORD_PROCESS_REGEX, TELEGRAM_CIDRS, TELEGRAM_PROCESSES, enabled_presets,
+                      game_rules)
 
 FAKEIP_V4, FAKEIP_V6 = "198.18.0.0/15", "fc00::/18"
 DISCORD_VOICE_PORTS = ["19294:19344", "50000:65535"]
@@ -485,6 +486,9 @@ def build_singbox(settings, nodes: list[Node], log_level: str | None = None,
         rules.append({"rule_set": ["user-proxy", "user-proxy-ip"], "outbound": "proxy"})
         if use_presets:
             if s["preset_telegram"]:
+                # by program first: media CDN servers are not in Telegram's address list and are often Russian,
+                # so without this they hit «российские адреса — напрямую» and photos/videos never load
+                rules.append({"process_name": TELEGRAM_PROCESSES, "outbound": "proxy"})
                 rules.append({"ip_cidr": TELEGRAM_CIDRS, "outbound": "proxy"})
             site_direct = [t for t in preset_direct if t != "geoip-ru"]
             if site_direct:

@@ -376,3 +376,33 @@ def test_failover_leaves_calls_alone(tmp_path):
     eng2 = _engine_with(api2, tmp_path)
     eng2._failover()
     assert api2.selected == [] and api2.closed == []   # server answers again: nothing is cut
+
+def test_route_watch_catches_programs_by_name(tmp_path, monkeypatch):
+    import json
+    from nexusvpn import paths, route_watch
+    cfg = tmp_path / "sb.json"
+    cfg.write_text(json.dumps({"route": {"rules": [{"process_name": ["Telegram.exe"], "outbound": "proxy"},
+                                                   {"process_name": ["steam.exe"], "outbound": "direct"}]}}))
+    up = tmp_path / "up.json"
+    up.write_text(json.dumps({"version": 3, "rules": [{"process_name": ["MyApp.exe"]}]}))
+    monkeypatch.setattr(paths, "SINGBOX_CONFIG", cfg)
+    monkeypatch.setattr(paths, "USER_PROXY_RS", up)
+    rx = route_watch.RouteWatcher()._regexes()
+    hit = lambda p: any(r.search(p) for r in rx)
+    assert hit(r"C:\Users\a\AppData\Roaming\Telegram Desktop\Telegram.exe")
+    assert hit(r"D:\Apps\MyApp.exe")
+    assert not hit(r"C:\Steam\steam.exe")
+    assert not hit(r"C:\x\NotTelegram.exe")
+
+
+def test_telegram_media_by_program_before_russian_direct(tmp_path):
+    from nexusvpn import config_builder
+    s = Settings(tmp_path / "s.json")
+    s.update(routing_mode="smart", preset_telegram=True, local_services_direct=True)
+    cfg = config_builder.build_singbox(s, parse_subscription("\n".join(LINKS))[0])
+    rules = cfg["route"]["rules"]
+    tg = next(i for i, r in enumerate(rules) if "Telegram.exe" in r.get("process_name", []))
+    direct_sets = [i for i, r in enumerate(rules) if r.get("outbound") == "direct" and
+                   any(t in ("geoip-ru", "category-ru", "learned-direct") for t in r.get("rule_set", []))]
+    assert rules[tg]["outbound"] == "proxy" and direct_sets and tg < min(direct_sets)
+    assert "91.105.192.0/23" in next(r for r in rules if "ip_cidr" in r and "149.154.160.0/20" in r["ip_cidr"])["ip_cidr"]

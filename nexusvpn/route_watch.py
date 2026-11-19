@@ -21,7 +21,7 @@ from . import paths
 log = logging.getLogger("bypass")
 IS_WIN = os.name == "nt"
 NO_WINDOW = 0x08000000 if IS_WIN else 0
-POLL = 8.0
+POLL = 3.0   # a blocked media download retries within seconds; catch it on the first retry
 
 
 def _private(ip: str) -> bool:
@@ -38,6 +38,7 @@ class RouteWatcher:
         self._thread: threading.Thread | None = None
         self._added: set[str] = set()
         self._bad: set[str] = set()
+        self._exe: dict[int, str] = {}      # pid -> program path; polled every few seconds, so cache it
         self.on_change = on_change or (lambda: None)
 
     # ---------- lifecycle ----------
@@ -73,10 +74,23 @@ class RouteWatcher:
         except (OSError, ValueError):
             return []
         out = []
+        names: list[str] = []
         for rule in cfg.get("route", {}).get("rules", []):
             # Discord needs no scan: its domains resolve to FakeIP and its voice ranges are routed already
             if rule.get("outbound") == "proxy" and rule.get("process_path_regex"):
                 out += [re.compile(r.replace("(?i)", ""), re.I) for r in rule["process_path_regex"]]
+            # programs sent to the VPN by name (Telegram, «Своя маршрутизация» → «+ Программа…»): without this
+            # their raw-IP connections — e.g. Telegram media CDN servers — went straight past the tunnel
+            if rule.get("outbound") == "proxy" and rule.get("process_name"):
+                names += rule["process_name"]
+        try:
+            for rule in json.loads(paths.USER_PROXY_RS.read_text("utf-8")).get("rules", []):
+                names += rule.get("process_name", [])
+        except (OSError, ValueError):
+            pass
+        if names:
+            alt = "|".join(re.escape(n) for n in sorted(set(names)))
+            out.append(re.compile(r"(^|[\\/])(" + alt + r")$", re.I))
         return out
 
     def refresh(self) -> None:
@@ -109,13 +123,18 @@ class RouteWatcher:
 
     def _program_destinations(self, rx: list[re.Pattern]) -> set[str]:
         out: set[str] = set()
+        if len(self._exe) > 2000:
+            self._exe.clear()
         for conn in psutil.net_connections(kind="tcp"):
             if not conn.raddr or conn.status not in (psutil.CONN_SYN_SENT, psutil.CONN_ESTABLISHED):
                 continue
-            try:
-                path = psutil.Process(conn.pid).exe() if conn.pid else ""
-            except (psutil.Error, OSError):
-                continue
+            path = self._exe.get(conn.pid)
+            if path is None:
+                try:
+                    path = psutil.Process(conn.pid).exe() if conn.pid else ""
+                except (psutil.Error, OSError):
+                    continue
+                self._exe[conn.pid] = path
             if path and any(r.search(path) for r in rx):
                 out.add(conn.raddr.ip)
         return out
