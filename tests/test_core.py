@@ -217,11 +217,39 @@ def test_direct_game_servers_get_real_addresses(tmp_path):
     learned = next(i for i, r in enumerate(rules) if "learned-proxy" in r.get("rule_set", []))
     catch_all = next(i for i, r in enumerate(rules) if set(r) <= {"query_type", "action", "server", "rewrite_ttl"})
     assert game < learned and game < catch_all
-    assert rules[game - 2]["rule_set"] == ["user-proxy"]
+    user_vpn = next(i for i, r in enumerate(rules) if r.get("rule_set") == ["user-proxy"])
+    assert user_vpn < game
 
     s.update(games={})
     rules = config_builder.build_singbox(s, nodes)["dns"]["rules"]
     assert not any("demonware.net" in r.get("domain_suffix", []) for r in rules)
+
+
+def test_private_dns_answers_for_direct_sites_are_rejected(tmp_path):
+    """A router that thinks the internet is down answers every name with 10.0.0.1. Such an answer must be
+    thrown away (backup DNS, then DNS through the VPN), also for direct connections the core dials itself."""
+    from nexusvpn import config_builder
+    from nexusvpn.parsers import parse_subscription
+    nodes = parse_subscription("ss://YWVzLTEyOC1nY206dGVzdHBhc3M@203.0.113.5:8388#SS")[0]
+    for mode in ("smart", "custom", "global", "direct"):
+        s = _games_settings(tmp_path, cod="direct")
+        s.update(routing_mode=mode)
+        cfg = config_builder.build_singbox(s, nodes)
+        dns = cfg["dns"]["rules"]
+        assert not any(r.get("server") == "local" and r.get("action") != "route" and r.get("action") != "evaluate"
+                       for r in dns), mode
+        for i, r in enumerate(dns):
+            if r.get("action") == "evaluate" and r["server"] == "local":
+                assert [x.get("server") for x in dns[i:i + 7:2]] == ["local", "local-alt", "remote", "local"], mode
+                assert dns[i + 1]["action"] == "respond"
+                assert dns[i + 1]["rules"][1] == {"match_response": True, "ip_is_private": True, "invert": True}
+        assert all(r.get("inbound") == ["tun-in"] for r in dns if r.get("server") == "fakeip"), mode
+        route = cfg["route"]["rules"]
+        if cfg["route"]["final"] == "direct":
+            assert route[-1] == {"action": "resolve"}, mode
+        for i, r in enumerate(route):
+            if r.get("outbound") == "direct" and "inbound" not in r and not any(k.startswith("ip_") for k in r):
+                assert route[i - 1].get("action") == "resolve", (mode, r)
 
 
 def test_games_off_by_default(tmp_path):
@@ -241,8 +269,8 @@ def test_game_rules_before_learned_rules(tmp_path):
     s = _games_settings(tmp_path, cod="direct", steam="proxy")
     s.update(routing_mode="smart")
     rules = cb.build_singbox(s, parse_subscription("\n".join(LINKS))[0])["route"]["rules"]
-    game = next(i for i, r in enumerate(rules) if "process_path_regex" in r and r["outbound"] == "direct")
-    vpn_game = next(i for i, r in enumerate(rules) if "process_path_regex" in r and r["outbound"] == "proxy"
+    game = next(i for i, r in enumerate(rules) if "process_path_regex" in r and r.get("outbound") == "direct")
+    vpn_game = next(i for i, r in enumerate(rules) if "process_path_regex" in r and r.get("outbound") == "proxy"
                     and "steamapps" in r["process_path_regex"][0])
     learned = next(i for i, r in enumerate(rules) if "learned-proxy" in r.get("rule_set", []))
     assert game < learned and vpn_game < learned
@@ -288,8 +316,9 @@ def test_full_bypass_only_vpn_addresses_enter_tun(tmp_path):
     assert not inside("212.102.63.139")              # Call of Duty match server: never touches the program
     assert not inside("185.34.106.118")
     dns = cfg["dns"]["rules"]
-    assert dns[0] == {"rule_set": ["user-direct"], "server": "local"}
-    assert dns[-1]["server"] == "fakeip" and "rule_set" not in dns[-1]   # unknown sites: let smart routing see them
+    assert dns[0] == {"rule_set": ["user-direct"], "action": "evaluate", "server": "local"}
+    # unknown sites: let smart routing see them
+    assert any(r["server"] == "fakeip" and "rule_set" not in r and "domain_suffix" not in r for r in dns if "server" in r)
 
 
 def test_core_mode_keeps_default_route(tmp_path):

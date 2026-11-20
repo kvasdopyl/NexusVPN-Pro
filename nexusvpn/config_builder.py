@@ -323,6 +323,10 @@ def tun_scope(s, mode: str, tun_allowed: bool = True) -> str:
 
 
 FAKEIP_TTL = 5   # short: once smart routing files a site as direct, the next lookup gets the real address
+# Real addresses of direct sites are kept at most a minute. During an internet outage the router / ISP answers
+# every name with a stub address (10.0.0.1) and a long TTL; kept for the full TTL, Russian sites stayed dead
+# after the internet came back, until the VPN was restarted.
+DIRECT_DNS_TTL = 60
 
 
 def _rule_file_values(path, key: str) -> list[str]:
@@ -556,6 +560,14 @@ def build_singbox(settings, nodes: list[Node], log_level: str | None = None,
             if mode == "smart" or vpn_programs:
                 dns_rules.append({"query_type": addr, "action": "route", "server": "fakeip",
                                   "rewrite_ttl": FAKEIP_TTL})
+    for r in dns_rules:
+        if r.get("server") == "fakeip":
+            # only the system's own lookups (DNS hijacked from the TUN); addresses the core resolves itself for
+            # direct connections must be real
+            r["inbound"] = ["tun-in"]
+    if dns_final == "local":
+        dns_rules.append({"query_type": ["A", "AAAA"], "server": "local"})
+    dns_rules = [x for r in dns_rules for x in (_checked_local(r) if r.get("server") == "local" else [r])]
     dns = {"servers": dns_servers, "rules": dns_rules, "final": dns_final,
            "strategy": s["dns_strategy"] if s["ipv6_mode"] != "off" else "ipv4_only",
            "cache_capacity": 8192}
@@ -581,6 +593,11 @@ def build_singbox(settings, nodes: list[Node], log_level: str | None = None,
     inbounds.append({"type": "mixed", "tag": "probe-direct", "listen": "127.0.0.1", "listen_port": p_direct})
     inbounds.append({"type": "mixed", "tag": "probe-proxy", "listen": "127.0.0.1", "listen_port": p_proxy})
 
+    if final == "direct":
+        rules = _resolve_before_direct(rules) + [{"action": "resolve"}]
+    else:
+        rules = _resolve_before_direct(rules)
+
     cfg = {
         "log": {"level": log_level or s["log_level"], "timestamp": True},
         "dns": dns,
@@ -588,7 +605,7 @@ def build_singbox(settings, nodes: list[Node], log_level: str | None = None,
         "outbounds": outbounds,
         "route": {"rules": rules, "rule_set": rule_sets, "final": final,
                   "auto_detect_interface": bool(s["auto_detect_interface"]),
-                  "find_process": True, "default_domain_resolver": "local"},
+                  "find_process": True, "default_domain_resolver": {"server": "local", "rewrite_ttl": DIRECT_DNS_TTL}},
         "experimental": {
             "cache_file": {"enabled": True, "path": str(paths.RUN_DIR / "cache.db"),
                            "store_fakeip": True},
@@ -599,6 +616,32 @@ def build_singbox(settings, nodes: list[Node], log_level: str | None = None,
     if endpoints:
         cfg["endpoints"] = endpoints
     return cfg
+
+
+def _checked_local(rule: dict) -> list[dict]:
+    """A direct-site lookup whose answer must be a public address. A private one (10.0.0.1 from a router that
+    thinks the internet is down, a captive portal, DNS hijacking) is thrown away at once and the backup DNS,
+    then the DNS through the VPN, is asked. Only if all of them agree (a real LAN name) is it accepted."""
+    match = {k: v for k, v in rule.items() if k not in ("action", "server", "rewrite_ttl")}
+    out: list[dict] = []
+    for server in ("local", "local-alt", "remote"):
+        out.append({**match, "action": "evaluate", "server": server})
+        out.append({"type": "logical", "mode": "and", "action": "respond", "rules": [
+            match or {"invert": True, "domain": ["placeholder.invalid"]},
+            {"match_response": True, "ip_is_private": True, "invert": True}]})
+    out.append({**match, "action": "route", "server": "local", "rewrite_ttl": DIRECT_DNS_TTL})
+    return out
+
+
+def _resolve_before_direct(rules: list[dict]) -> list[dict]:
+    """Direct connections to a domain (system proxy, sniffed apps) are resolved through the DNS rules above, not
+    by the bare local DNS, so a bogus private answer cannot reach them either."""
+    out: list[dict] = []
+    for r in rules:
+        if r.get("outbound") == "direct" and "inbound" not in r and not any(k.startswith("ip_") for k in r):
+            out.append({**{k: v for k, v in r.items() if k != "outbound"}, "action": "resolve"})
+        out.append(r)
+    return out
 
 
 def _plain_dns(tag: str, value: str) -> dict:
