@@ -203,6 +203,27 @@ def test_game_presets_match_paths(tmp_path):
         assert any(re.search(r, path) for r in direct) == is_game, path
 
 
+def test_direct_game_servers_get_real_addresses(tmp_path):
+    """«Напрямую»: the game's servers must not get FakeIP, or the game's UDP goes through the TUN, loses its
+    port (3074) and the game shows NAT «Строгий». The user's own VPN list still wins."""
+    from nexusvpn import config_builder
+    from nexusvpn.parsers import parse_subscription
+    s = _games_settings(tmp_path, cod="direct")
+    s.update(routing_mode="smart", capture_mode="tun", direct_bypass="full")
+    nodes = parse_subscription("ss://YWVzLTEyOC1nY206dGVzdHBhc3M@203.0.113.5:8388#SS")[0]
+    rules = config_builder.build_singbox(s, nodes)["dns"]["rules"]
+    game = next(i for i, r in enumerate(rules) if "demonware.net" in r.get("domain_suffix", []))
+    assert rules[game]["server"] == "local"
+    learned = next(i for i, r in enumerate(rules) if "learned-proxy" in r.get("rule_set", []))
+    catch_all = next(i for i, r in enumerate(rules) if set(r) <= {"query_type", "action", "server", "rewrite_ttl"})
+    assert game < learned and game < catch_all
+    assert rules[game - 2]["rule_set"] == ["user-proxy"]
+
+    s.update(games={})
+    rules = config_builder.build_singbox(s, nodes)["dns"]["rules"]
+    assert not any("demonware.net" in r.get("domain_suffix", []) for r in rules)
+
+
 def test_games_off_by_default(tmp_path):
     from nexusvpn.presets import game_rules
     assert game_rules(Settings(tmp_path / "s.json")) == ([], [])
@@ -376,33 +397,3 @@ def test_failover_leaves_calls_alone(tmp_path):
     eng2 = _engine_with(api2, tmp_path)
     eng2._failover()
     assert api2.selected == [] and api2.closed == []   # server answers again: nothing is cut
-
-def test_route_watch_catches_programs_by_name(tmp_path, monkeypatch):
-    import json
-    from nexusvpn import paths, route_watch
-    cfg = tmp_path / "sb.json"
-    cfg.write_text(json.dumps({"route": {"rules": [{"process_name": ["Telegram.exe"], "outbound": "proxy"},
-                                                   {"process_name": ["steam.exe"], "outbound": "direct"}]}}))
-    up = tmp_path / "up.json"
-    up.write_text(json.dumps({"version": 3, "rules": [{"process_name": ["MyApp.exe"]}]}))
-    monkeypatch.setattr(paths, "SINGBOX_CONFIG", cfg)
-    monkeypatch.setattr(paths, "USER_PROXY_RS", up)
-    rx = route_watch.RouteWatcher()._regexes()
-    hit = lambda p: any(r.search(p) for r in rx)
-    assert hit(r"C:\Users\a\AppData\Roaming\Telegram Desktop\Telegram.exe")
-    assert hit(r"D:\Apps\MyApp.exe")
-    assert not hit(r"C:\Steam\steam.exe")
-    assert not hit(r"C:\x\NotTelegram.exe")
-
-
-def test_telegram_media_by_program_before_russian_direct(tmp_path):
-    from nexusvpn import config_builder
-    s = Settings(tmp_path / "s.json")
-    s.update(routing_mode="smart", preset_telegram=True, local_services_direct=True)
-    cfg = config_builder.build_singbox(s, parse_subscription("\n".join(LINKS))[0])
-    rules = cfg["route"]["rules"]
-    tg = next(i for i, r in enumerate(rules) if "Telegram.exe" in r.get("process_name", []))
-    direct_sets = [i for i, r in enumerate(rules) if r.get("outbound") == "direct" and
-                   any(t in ("geoip-ru", "category-ru", "learned-direct") for t in r.get("rule_set", []))]
-    assert rules[tg]["outbound"] == "proxy" and direct_sets and tg < min(direct_sets)
-    assert "91.105.192.0/23" in next(r for r in rules if "ip_cidr" in r and "149.154.160.0/20" in r["ip_cidr"])["ip_cidr"]

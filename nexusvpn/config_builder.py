@@ -8,7 +8,7 @@ import re
 from . import paths
 from .models import Node
 from .discord_voice import DISCORD_VOICE_CIDRS
-from .presets import (DISCORD_DOMAINS, DISCORD_PROCESS_REGEX, TELEGRAM_CIDRS, TELEGRAM_PROCESSES, enabled_presets,
+from .presets import (DISCORD_DOMAINS, DISCORD_PROCESS_REGEX, TELEGRAM_CIDRS, enabled_presets, game_direct_domains,
                       game_rules)
 
 FAKEIP_V4, FAKEIP_V6 = "198.18.0.0/15", "fc00::/18"
@@ -486,9 +486,6 @@ def build_singbox(settings, nodes: list[Node], log_level: str | None = None,
         rules.append({"rule_set": ["user-proxy", "user-proxy-ip"], "outbound": "proxy"})
         if use_presets:
             if s["preset_telegram"]:
-                # by program first: media CDN servers are not in Telegram's address list and are often Russian,
-                # so without this they hit «российские адреса — напрямую» and photos/videos never load
-                rules.append({"process_name": TELEGRAM_PROCESSES, "outbound": "proxy"})
                 rules.append({"ip_cidr": TELEGRAM_CIDRS, "outbound": "proxy"})
             site_direct = [t for t in preset_direct if t != "geoip-ru"]
             if site_direct:
@@ -525,6 +522,17 @@ def build_singbox(settings, nodes: list[Node], log_level: str | None = None,
         dns_final = "local"
         fakeip = s["dns_fakeip"] or scope == "include"
         addr = ["A", "AAAA"]
+        game_domains = game_direct_domains(s)
+        if game_domains:
+            # the user's own VPN list still wins; presets and learned rules do not. Real addresses keep the game off
+            # the TUN, so its UDP port survives (3074 for CoD) and the NAT type stays «Открытый»
+            if "user-proxy" in proxy_sets and fakeip:
+                dns_rules.append({"rule_set": ["user-proxy"], "query_type": addr, "action": "route", "server": "fakeip",
+                                  "rewrite_ttl": FAKEIP_TTL})
+            elif "user-proxy" in proxy_sets:
+                dns_rules.append({"rule_set": ["user-proxy"], "server": "remote"})
+            dns_rules.append({"rule_set": ["user-direct"], "server": "local"})
+            dns_rules.append({"domain_suffix": game_domains, "server": "local"})
         if fakeip:
             dns_servers.append({"tag": "fakeip", "type": "fakeip", "inet4_range": FAKEIP_V4,
                                 "inet6_range": FAKEIP_V6})

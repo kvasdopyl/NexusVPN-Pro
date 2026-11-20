@@ -277,6 +277,10 @@ class GamesPage(QWidget):
         self._update_warning()
         self._sel_changed()
 
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._update_warning()
+
     def _sel_changed(self) -> None:
         keys = selected_data(self.tbl)
         self.b_remove.setEnabled(any(k and k.startswith("custom:") for k in keys))
@@ -297,9 +301,19 @@ class GamesPage(QWidget):
         vpn = any(m == "proxy" for m in games.values()) or any(g.get("mode") == "proxy" for g in custom)
         s = self.app.settings
         full = s["capture_mode"] == "tun" and s["direct_bypass"] == "full"
-        self.warn.setText("Игры «Через VPN» при режиме «Мимо программы»: TCP-соединения игры попадут в VPN сами, а "
-                          "игровой UDP — нет. Для таких игр включите в Настройках → «Трафик мимо VPN» → «Через "
-                          "программу»." if vpn and full else "")
+        direct = any(m == "direct" for m in games.values()) or any(g.get("mode") == "direct" for g in custom)
+        through_program = s["capture_mode"] == "both" or (s["capture_mode"] == "tun" and (
+            s["routing_mode"] == "global" or s["direct_bypass"] != "full"))
+        if vpn and full:
+            text = ("Игры «Через VPN» при режиме «Мимо программы»: TCP-соединения игры попадут в VPN сами, а "
+                    "игровой UDP — нет. Для таких игр включите в Настройках → «Трафик мимо VPN» → «Через программу».")
+        elif direct and through_program:
+            text = ("Сейчас весь трафик идёт через программу (режим «Всё через VPN» или «Трафик мимо VPN» → «Через "
+                    "программу»), поэтому у игр «Напрямую» тип NAT будет строгим. Для открытого NAT выберите на главной "
+                    "режим «Умная» или «Своя», а в Настройках → «Трафик мимо VPN» → «Мимо программы».")
+        else:
+            text = ""
+        self.warn.setText(text)
         self.warn.setVisible(bool(self.warn.text()))
 
     def _changed(self, _key: str) -> None:
