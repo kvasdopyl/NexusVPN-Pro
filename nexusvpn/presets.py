@@ -44,11 +44,17 @@ PRESET_TITLES = {
     "local_services_direct": "Российские сервисы — всегда напрямую",
 }
 
+# https://core.telegram.org/resources/cidr.txt (+ 95.161.64.0/20, still used by older data centres).
+# 91.105.192.0/23 holds the CDN data centres: accounts without Premium download channel media from there.
 TELEGRAM_CIDRS = [
-    "91.108.4.0/22", "91.108.8.0/22", "91.108.12.0/22", "91.108.16.0/22", "91.108.20.0/22",
+    "91.105.192.0/23", "91.108.4.0/22", "91.108.8.0/22", "91.108.12.0/22", "91.108.16.0/22", "91.108.20.0/22",
     "91.108.56.0/22", "95.161.64.0/20", "149.154.160.0/20", "185.76.151.0/24",
-    "2001:67c:4e8::/48", "2001:b28:f23c::/47", "2001:b28:f23f::/48",
+    "2001:67c:4e8::/48", "2001:b28:f23c::/47", "2001:b28:f23f::/48", "2a0a:f280::/32",
 ]
+# Telegram dials its servers by address, never by name. Where the whole system passes the TUN, catch it by
+# program too, so a server missing from the list above still goes through the VPN.
+TELEGRAM_PROCESSES = ["Telegram.exe", "AyuGram.exe", "Kotatogram.exe", "64Gram.exe", "Materialgram.exe",
+                      "Unigram.exe"]
 
 DISCORD_DOMAINS = [
     "discord.com", "discord.gg", "discord.media", "discordapp.com", "discordapp.net",

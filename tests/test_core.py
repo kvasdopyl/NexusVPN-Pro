@@ -288,6 +288,27 @@ def test_running_booster_detected(monkeypatch):
     assert engine.running_booster() == ""
 
 
+def test_telegram_cdn_goes_through_vpn(tmp_path):
+    """Without Premium, channel media comes from Telegram's CDN data centres (91.105.192.0/23). They must enter
+    the TUN even when only VPN addresses do, and Telegram's own program must be caught where everything enters."""
+    from nexusvpn import config_builder
+    from nexusvpn.parsers import parse_subscription
+    nodes = parse_subscription("ss://YWVzLTEyOC1nY206dGVzdHBhc3M@203.0.113.5:8388#SS")[0]
+    for bypass in ("full", "core"):
+        s = _games_settings(tmp_path)
+        s.update(routing_mode="smart", capture_mode="tun", direct_bypass=bypass)
+        cfg = config_builder.build_singbox(s, nodes)
+        tun = next(i for i in cfg["inbounds"] if i["type"] == "tun")
+        if "route_address" in tun:
+            assert "91.105.192.0/23" in tun["route_address"], bypass
+        rules = cfg["route"]["rules"]
+        tg = next(i for i, r in enumerate(rules) if "Telegram.exe" in r.get("process_name", []))
+        cidr = next(i for i, r in enumerate(rules) if "91.105.192.0/23" in r.get("ip_cidr", []))
+        assert rules[tg]["outbound"] == rules[cidr]["outbound"] == "proxy", bypass
+        geoip_ru = [i for i, r in enumerate(rules) if r.get("rule_set") == ["geoip-ru"]]
+        assert all(tg < i and cidr < i for i in geoip_ru), bypass
+
+
 def test_games_off_by_default(tmp_path):
     from nexusvpn.presets import game_rules
     assert game_rules(Settings(tmp_path / "s.json")) == ([], [])
