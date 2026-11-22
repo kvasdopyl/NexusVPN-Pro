@@ -5,11 +5,11 @@ import ipaddress
 import json
 import re
 
-from . import paths
+from . import game_bypass, paths
 from .models import Node
 from .discord_voice import DISCORD_VOICE_CIDRS
-from .presets import (BOOSTER_FOLDERS, DISCORD_DOMAINS, DISCORD_PROCESS_REGEX, TELEGRAM_CIDRS, enabled_presets,
-                      game_direct_domains, game_path_regexes, game_rules)
+from .presets import (BOOSTER_FOLDERS, DISCORD_DOMAINS, DISCORD_PROCESS_REGEX, TELEGRAM_CIDRS, TELEGRAM_PROCESSES,
+                      enabled_presets, game_path_regexes, game_rules)
 
 FAKEIP_V4, FAKEIP_V6 = "198.18.0.0/15", "fc00::/18"
 DISCORD_VOICE_PORTS = ["19294:19344", "50000:65535"]
@@ -323,9 +323,7 @@ def tun_scope(s, mode: str, tun_allowed: bool = True) -> str:
 
 
 FAKEIP_TTL = 5   # short: once smart routing files a site as direct, the next lookup gets the real address
-# Real addresses of direct sites are kept at most a minute. During an internet outage the router / ISP answers
-# every name with a stub address (10.0.0.1) and a long TTL; kept for the full TTL, Russian sites stayed dead
-# after the internet came back, until the VPN was restarted.
+# Real addresses of direct sites are kept at most a minute: a bogus answer must not outlive its cause.
 DIRECT_DNS_TTL = 60
 
 
@@ -371,6 +369,7 @@ def build_singbox(settings, nodes: list[Node], log_level: str | None = None,
     if not nodes:
         raise ValueError("Нет ни одного включённого сервера")
     ensure_rule_files()
+    game_bypass.write_rule_set(s)
     mode = s["routing_mode"]
     if mode == "rules":
         mode = "custom"
@@ -430,7 +429,8 @@ def build_singbox(settings, nodes: list[Node], log_level: str | None = None,
                  _rs_local("user-direct-ip", paths.USER_DIRECT_IP_RS),
                  _rs_local("learned-proxy", paths.LEARNED_PROXY_RS),
                  _rs_local("learned-proxy-ip", paths.LEARNED_PROXY_IP_RS),
-                 _rs_local("learned-direct", paths.LEARNED_DIRECT_RS)]
+                 _rs_local("learned-direct", paths.LEARNED_DIRECT_RS),
+                 _rs_local("game-direct", paths.GAME_DIRECT_RS)]
     preset_proxy, preset_direct, preset_discord = [], [], []
     if use_presets:
         for tag, _url, action in enabled_presets(s):
@@ -491,6 +491,9 @@ def build_singbox(settings, nodes: list[Node], log_level: str | None = None,
         rules.append({"rule_set": ["user-proxy", "user-proxy-ip"], "outbound": "proxy"})
         if use_presets:
             if s["preset_telegram"]:
+                # by program first: media CDN servers are not in Telegram's address list and are often Russian,
+                # so without this they hit «российские адреса — напрямую» and photos/videos never load
+                rules.append({"process_name": TELEGRAM_PROCESSES, "outbound": "proxy"})
                 rules.append({"ip_cidr": TELEGRAM_CIDRS, "outbound": "proxy"})
             site_direct = [t for t in preset_direct if t != "geoip-ru"]
             if site_direct:
@@ -518,6 +521,9 @@ def build_singbox(settings, nodes: list[Node], log_level: str | None = None,
         {"tag": "bootstrap", "type": "udp", "server": "1.1.1.1"},
     ]
     dns_rules: list[dict] = []
+    if game_direct and mode != "direct":
+        # games «Напрямую» get real addresses: a FakeIP answer would pull their packets into the TUN
+        dns_rules.append({"rule_set": ["game-direct"], "server": "local"})
     if mode == "global":
         dns_final = "remote"
         dns_rules.append({"rule_set": ["user-direct"], "server": "local"})
@@ -527,17 +533,6 @@ def build_singbox(settings, nodes: list[Node], log_level: str | None = None,
         dns_final = "local"
         fakeip = s["dns_fakeip"] or scope == "include"
         addr = ["A", "AAAA"]
-        game_domains = game_direct_domains(s)
-        if game_domains:
-            # the user's own VPN list still wins; presets and learned rules do not. Real addresses keep the game off
-            # the TUN, so its UDP port survives (3074 for CoD) and the NAT type stays «Открытый»
-            if "user-proxy" in proxy_sets and fakeip:
-                dns_rules.append({"rule_set": ["user-proxy"], "query_type": addr, "action": "route", "server": "fakeip",
-                                  "rewrite_ttl": FAKEIP_TTL})
-            elif "user-proxy" in proxy_sets:
-                dns_rules.append({"rule_set": ["user-proxy"], "server": "remote"})
-            dns_rules.append({"rule_set": ["user-direct"], "server": "local"})
-            dns_rules.append({"domain_suffix": game_domains, "server": "local"})
         if fakeip:
             dns_servers.append({"tag": "fakeip", "type": "fakeip", "inet4_range": FAKEIP_V4,
                                 "inet6_range": FAKEIP_V6})
@@ -598,10 +593,7 @@ def build_singbox(settings, nodes: list[Node], log_level: str | None = None,
     inbounds.append({"type": "mixed", "tag": "probe-direct", "listen": "127.0.0.1", "listen_port": p_direct})
     inbounds.append({"type": "mixed", "tag": "probe-proxy", "listen": "127.0.0.1", "listen_port": p_proxy})
 
-    if final == "direct":
-        rules = _resolve_before_direct(rules) + [{"action": "resolve"}]
-    else:
-        rules = _resolve_before_direct(rules)
+    rules = _resolve_before_direct(rules) + ([{"action": "resolve"}] if final == "direct" else [])
 
     cfg = {
         "log": {"level": log_level or s["log_level"], "timestamp": True},

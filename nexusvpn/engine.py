@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import secrets
 import subprocess
@@ -17,6 +18,7 @@ import psutil
 from . import config_builder, cores, paths, winutil
 from .clash_api import ClashAPI
 from .learner import Learner
+from .game_bypass import GameBypass
 from .route_watch import RouteWatcher, flush_dns
 from .tunnels import TunnelError, kill_orphans, make_tunnel
 from .presets import BOOSTER_PROCESSES, enabled_presets
@@ -183,6 +185,7 @@ class Engine:
         self._stop_evt = threading.Event()
         self.learner = Learner(settings, self.api, self.emit)
         self.routes: RouteWatcher | None = None
+        self.games: GameBypass | None = None
         self.scope = "none"
         self._running_cfg = ""
         self._cfg_args: tuple = ({}, [])
@@ -297,6 +300,10 @@ class Engine:
         if self.scope == "include":
             self.routes = RouteWatcher()
             self.routes.start()
+        # the booster routes the game itself; host routes to the game's servers would pull it away from the booster
+        if tun and self.scope in ("all", "include") and os.name == "nt" and not self._booster:
+            self.games = GameBypass(self.s, self.api, tun.get("interface_name", ""), flush_dns)
+            self.games.start()
 
     def _start_tunnels(self) -> tuple[dict[str, str], list[str]]:
         """Bring up OpenVPN/IKEv2 adapters in parallel before sing-box. A failed tunnel only
@@ -337,6 +344,9 @@ class Engine:
         self.tunnels = {}
 
     def _kill_children(self) -> None:
+        if self.games:
+            self.games.stop()
+            self.games = None
         for p in (self.singbox, self.xray, self.mihomo):
             if p:
                 p.stop()
@@ -545,7 +555,6 @@ class Engine:
             log.info("%s %s — перезапуск ядра", booster or self._booster, "запущен" if booster else "закрыт")
             self.emit("status", {"text": f"Запущен {booster}: игры отданы ему, VPN не мешает" if booster
                                  else f"{self._booster} закрыт: обычный режим VPN"})
-            self._booster = booster
             self.restart("ускоритель игр " + ("запущен" if booster else "закрыт"))
             return
 

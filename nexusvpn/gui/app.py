@@ -18,7 +18,7 @@ from .. import paths, winutil
 from ..engine import Engine, Service, kill_stale, setup_logging
 from ..settings import Settings
 from ..subscription import NodeStore
-from .common import COLORS, STATE_TEXT, THEME, Bridge, apply_dark_theme, run_bg, status_icon
+from .common import STATE_TEXT, THEME, Bridge, app_icon, apply_dark_theme, run_bg, tray_icon
 from .pages import MODES, HomePage, ServersPage
 from .pages3 import GamesPage, NoWheelUntilClicked
 from .discord_page import DiscordPage
@@ -35,7 +35,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.app = app
         self.setWindowTitle(f"{paths.APP_NAME} {paths.APP_VERSION}")
-        self.setWindowIcon(status_icon(COLORS["stopped"]))
+        self.setWindowIcon(app_icon())
         self.resize(1100, 720)
         self.setMinimumSize(880, 560)
         root = QWidget()
@@ -262,7 +262,7 @@ class NexusApp:
 
     # ------------------------------------------------------------------ tray
     def _build_tray(self) -> None:
-        self.tray = QSystemTrayIcon(status_icon(COLORS["stopped"]))
+        self.tray = QSystemTrayIcon(tray_icon(False))
         m = QMenu()
         self.act_toggle = QAction("Подключить")
         self.act_toggle.triggered.connect(self.home.toggle)
@@ -324,9 +324,7 @@ class NexusApp:
             return
         if name == "state":
             st = data["state"]
-            icon = status_icon(COLORS.get(st, "#64748b"))
-            self.tray.setIcon(icon)
-            self.win.setWindowIcon(icon)
+            self.tray.setIcon(tray_icon(st == "running"))
             self.tray.setToolTip(f"{paths.APP_NAME} — {STATE_TEXT.get(st, st)}")
             self.act_toggle.setText("Отключить" if st in ("running", "starting") else "Подключить")
             if st == "error":
@@ -476,6 +474,7 @@ def main(argv: list[str] | None = None) -> int:
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     qapp = QApplication(argv)
     qapp.setApplicationName(paths.APP_NAME)
+    qapp.setWindowIcon(app_icon())
     qapp.setQuitOnLastWindowClosed(False)
     if "--after-elevate" in argv:
         time.sleep(1.0)   # let the non-elevated instance release the single-instance pipe
