@@ -195,6 +195,10 @@ class Engine:
         threading.Thread(target=self._watchdog, name="watchdog", daemon=True).start()
 
     # ------------------------------------------------------------------ helpers
+    def active_booster(self) -> str:
+        """Process name of the game booster the running VPN currently yields to, "" if none."""
+        return self._booster if self.state == "running" and self.scope in ("include", "all") else ""
+
     def api(self) -> ClashAPI:
         return ClashAPI(int(self.s["clash_api_port"]), self.s["clash_secret"])
 

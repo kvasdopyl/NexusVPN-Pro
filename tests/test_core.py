@@ -278,6 +278,15 @@ def test_booster_yields_the_game(tmp_path):
         assert any(re.search(x, path) for x in rule["process_path_regex"]), path
 
 
+def test_active_booster_only_while_vpn_yields():
+    from types import SimpleNamespace
+    from nexusvpn.engine import Engine
+    eng = SimpleNamespace(_booster="gearup_booster", state="running", scope="all")
+    assert Engine.active_booster(eng) == "gearup_booster"
+    for change in ({"state": "stopped"}, {"scope": "none"}, {"_booster": ""}):
+        assert Engine.active_booster(SimpleNamespace(**{**vars(eng), **change})) == "", change
+
+
 def test_running_booster_detected(monkeypatch):
     from types import SimpleNamespace
     from nexusvpn import engine

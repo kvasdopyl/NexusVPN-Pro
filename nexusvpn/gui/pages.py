@@ -14,6 +14,7 @@ from .. import paths, tunnels, winutil
 from ..links import from_text, to_text
 from ..models import Node
 from ..parsers import ParseError, parse_subscription
+from ..presets import BOOSTER_NAMES
 from ..subscription import Subscription, subs_from_settings, subs_to_settings
 from .common import COLORS, STATE_TEXT, HelpButton, human_bytes, run_bg, with_help
 from .widgets import btn, group_header, page_title, selected_data, set_row, table
@@ -78,6 +79,13 @@ class HomePage(QWidget):
         info.addLayout(state_row)
         for w in (self.action_lbl, self.detail_lbl, self.err_lbl):
             info.addWidget(w)
+        self.booster_lbl = QLabel()
+        self.booster_lbl.setWordWrap(True)
+        self.booster_lbl.setStyleSheet("background:#0c4a6e;border:1px solid #38bdf8;border-radius:10px;"
+                                       "padding:10px 14px;color:#e0f2fe")
+        self.booster_lbl.hide()
+        info.addSpacing(6)
+        info.addWidget(self.booster_lbl)
         info.addStretch()
         top.addSpacing(14)
         top.addLayout(info, 1)
@@ -244,6 +252,12 @@ class HomePage(QWidget):
         mode = {k: t for k, t, _ in MODES}.get(self.app.settings["routing_mode"], "")
         cap = dict(CAPTURE).get(self.app.settings["capture_mode"], "")
         self.detail_lbl.setText(f"{mode} · {cap}")
+        booster = eng.active_booster()
+        if booster:
+            name = BOOSTER_NAMES.get(booster, booster)
+            self.booster_lbl.setText(f"<b>Запущен {name}</b> — игры идут через {name}, мимо VPN. Сайты из списков "
+                                     "блокировок по-прежнему открываются через VPN.")
+        self.booster_lbl.setVisible(bool(booster))
         ping = "—" if self.ping is None else ("нет связи" if self.ping < 0 else f"{self.ping} мс")
         self.c_ping.setText(f"<b>Задержка через VPN</b><br>{ping}")
         r = self.routes if st == "running" else {}

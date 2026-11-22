@@ -144,6 +144,8 @@ def game_direct_domains(settings) -> list[str]:
 BOOSTER_FOLDERS = ["GearUP", "ExitLag", "LagoFast", "NoPing", "WTFast", "Mudfish"]
 BOOSTER_PROCESSES = {"gearup_booster.exe", "gearup_ball.exe", "exitlag.exe", "lagofast.exe", "noping.exe",
                      "wtfast.exe", "mudrun.exe"}
+BOOSTER_NAMES = {"gearup_booster": "GearUP", "gearup_ball": "GearUP", "exitlag": "ExitLag", "lagofast": "LagoFast",
+                 "noping": "NoPing", "wtfast": "WTFast", "mudrun": "Mudfish"}
 
 
 GAME_MODES = {"off": "Не трогать", "direct": "Напрямую (мимо VPN)", "proxy": "Через VPN"}
