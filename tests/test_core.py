@@ -252,6 +252,42 @@ def test_private_dns_answers_for_direct_sites_are_rejected(tmp_path):
                 assert route[i - 1].get("action") == "resolve", (mode, r)
 
 
+def test_booster_yields_the_game(tmp_path):
+    """GearUP & co. send the game through their own adapter: with one running there must be no Windows DNS block
+    (strict_route) and no FakeIP for unknown sites; their own programs always go direct."""
+    import re
+    from nexusvpn import config_builder
+    from nexusvpn.parsers import parse_subscription
+    nodes = parse_subscription("ss://YWVzLTEyOC1nY206dGVzdHBhc3M@203.0.113.5:8388#SS")[0]
+    s = _games_settings(tmp_path, cod="direct")
+    s.update(routing_mode="smart", capture_mode="tun", direct_bypass="full", strict_route=True)
+
+    def catch_all(cfg):
+        return [r for r in cfg["dns"]["rules"] if r.get("server") == "fakeip" and "rule_set" not in r
+                and "domain_suffix" not in r]
+
+    normal = config_builder.build_singbox(s, nodes)
+    tun = next(i for i in normal["inbounds"] if i["type"] == "tun")
+    assert tun["strict_route"] is True and catch_all(normal)
+    boosted = config_builder.build_singbox(s, nodes, booster=True)
+    tun = next(i for i in boosted["inbounds"] if i["type"] == "tun")
+    assert tun["strict_route"] is False and not catch_all(boosted)
+    assert any(r.get("server") == "fakeip" and r.get("rule_set") for r in boosted["dns"]["rules"])  # lists: VPN
+    rule = next(r for r in boosted["route"]["rules"] if r.get("outbound") == "direct" and "process_path_regex" in r)
+    for path in (r"C:\Program Files (x86)\GearUP\gearup_booster.exe", r"C:\Program Files\ExitLag\ExitLag.exe"):
+        assert any(re.search(x, path) for x in rule["process_path_regex"]), path
+
+
+def test_running_booster_detected(monkeypatch):
+    from types import SimpleNamespace
+    from nexusvpn import engine
+    procs = [SimpleNamespace(info={"name": "chrome.exe"}), SimpleNamespace(info={"name": "GearUP_Booster.exe"})]
+    monkeypatch.setattr(engine.psutil, "process_iter", lambda attrs: iter(procs))
+    assert engine.running_booster() == "gearup_booster"
+    monkeypatch.setattr(engine.psutil, "process_iter", lambda attrs: iter(procs[:1]))
+    assert engine.running_booster() == ""
+
+
 def test_games_off_by_default(tmp_path):
     from nexusvpn.presets import game_rules
     assert game_rules(Settings(tmp_path / "s.json")) == ([], [])

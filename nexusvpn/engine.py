@@ -19,7 +19,7 @@ from .clash_api import ClashAPI
 from .learner import Learner
 from .route_watch import RouteWatcher, flush_dns
 from .tunnels import TunnelError, kill_orphans, make_tunnel
-from .presets import enabled_presets
+from .presets import BOOSTER_PROCESSES, enabled_presets
 from .subscription import NodeStore, fetch, subs_from_settings, subs_to_settings
 
 log = logging.getLogger("engine")
@@ -110,6 +110,15 @@ def _strip_ansi(s: str) -> str:
     return re.sub(r"\x1b\[[0-9;]*m", "", s)
 
 
+def running_booster() -> str:
+    """Name of a running game booster (GearUP, ExitLag…) or ""."""
+    for p in psutil.process_iter(["name"]):
+        name = (p.info.get("name") or "").lower()
+        if name in BOOSTER_PROCESSES:
+            return name.removesuffix(".exe")
+    return ""
+
+
 def kill_stale() -> None:
     """Kill cores left over from a previous crash of the GUI (they would hold ports & TUN)."""
     try:
@@ -179,6 +188,7 @@ class Engine:
         self._cfg_args: tuple = ({}, [])
         self._reload_timer: threading.Timer | None = None
         self._iface_pending: frozenset | None = None
+        self._booster = ""            # name of a running game booster (GearUP…), "" if none
         self._voice_fails = 0
         self._last_voice_check = 0.0
         self._last_all_down = 0.0
@@ -229,8 +239,11 @@ class Engine:
         if self.s["capture_mode"] in ("tun", "both") or self.s["proxy_voice_tun"]:
             winutil.allow_in_firewall([str(paths.core_path(n)) for n in ("sing-box", "xray", "mihomo")])
         ifaces, exclude = self._start_tunnels()
+        self._booster = running_booster()
+        if self._booster:
+            log.info("запущен %s — VPN уступает ему игру", self._booster)
         sb, xr, mh = config_builder.write_configs(self.s, self.store.nodes, ifaces=ifaces, exclude_ips=exclude,
-                                                  tun_allowed=winutil.is_admin())
+                                                  tun_allowed=winutil.is_admin(), booster=bool(self._booster))
         self._cfg_args = (ifaces, exclude)
         self._running_cfg = self._comparable(sb, xr, mh)
         tun = next((i for i in sb["inbounds"] if i["type"] == "tun"), None)
@@ -367,7 +380,7 @@ class Engine:
         try:
             enabled = [n for n in self.store.nodes if n.enabled]
             sb = config_builder.build_singbox(self.s, self.store.nodes, ifaces=ifaces, exclude_ips=exclude,
-                                              tun_allowed=winutil.is_admin())
+                                              tun_allowed=winutil.is_admin(), booster=bool(self._booster))
             xr = config_builder.build_xray(enabled, self.s["log_level"])
             mh = config_builder.build_mihomo(enabled, self.s["log_level"])
         except ValueError:
@@ -525,6 +538,15 @@ class Engine:
                 self._kill_children()
                 self.state = "stopped"
             self.start()
+            return
+
+        booster = running_booster()
+        if booster != self._booster and self.state == "running" and self.scope in ("include", "all"):
+            log.info("%s %s — перезапуск ядра", booster or self._booster, "запущен" if booster else "закрыт")
+            self.emit("status", {"text": f"Запущен {booster}: игры отданы ему, VPN не мешает" if booster
+                                 else f"{self._booster} закрыт: обычный режим VPN"})
+            self._booster = booster
+            self.restart("ускоритель игр " + ("запущен" if booster else "закрыт"))
             return
 
         # network changed (Wi-Fi switch, cable, VPN of a third party): drop stale sessions fast

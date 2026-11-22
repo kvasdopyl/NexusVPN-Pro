@@ -133,6 +133,13 @@ def game_direct_domains(settings) -> list[str]:
     return out
 
 
+# Game boosters bring their own network adapter and send the game through it. They must never meet our TUN:
+# their own traffic goes direct, and while one runs the core yields (see config_builder.build_singbox).
+BOOSTER_FOLDERS = ["GearUP", "ExitLag", "LagoFast", "NoPing", "WTFast", "Mudfish"]
+BOOSTER_PROCESSES = {"gearup_booster.exe", "gearup_ball.exe", "exitlag.exe", "lagofast.exe", "noping.exe",
+                     "wtfast.exe", "mudrun.exe"}
+
+
 GAME_MODES = {"off": "Не трогать", "direct": "Напрямую (мимо VPN)", "proxy": "Через VPN"}
 
 
